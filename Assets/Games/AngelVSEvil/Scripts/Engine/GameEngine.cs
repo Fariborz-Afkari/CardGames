@@ -87,18 +87,15 @@ namespace AngelVSZombie
 
             if (drawn.CardType == CardType.Zombie)
             {
-                // اگر زامبی بود، به دست اضافه نمی‌شود
                 Flow.HandleZombieDraw(player, drawn);
                 return true;
             }
             else
             {
-                // اگر کارت معمولی بود، به دست اضافه می‌شود
                 player.Hand.Add(drawn);
                 return false;
             }
         }
-
         public void ShuffleDeck()
         {
             for (int i = 0; i < Data.Deck.Count; i++)
@@ -180,20 +177,17 @@ namespace AngelVSZombie
                     break;
 
                 case CardType.Nope:
-                    if (Data.LastPlayedCard != null)
-                    {
-                        UI.UpdateStatus($"{Data.LastPlayedPlayer.Definition.PlayerName} کارت {Data.LastPlayedCard.CardName} او باطل شد!");
-                        Data.LastPlayedCard = null;
-                        Data.LastPlayedPlayer = null;
-                    }
+                    //if (Data.LastPlayedCard != null)
+                    //{
+                    //    UI.UpdateStatus($"{Data.LastPlayedPlayer.Definition.PlayerName} کارت {Data.LastPlayedCard.CardName} او باطل شد!");
+                    //    Data.LastPlayedCard = null;
+                    //    Data.LastPlayedPlayer = null;
+                    //}
                     break;
 
                 case CardType.Eye:
-                    var topCard = PeekDeck(1);
-                    if (topCard.Count > 0)
-                    {
-                        Flow.PromptEyeEffect(topCard[0]);
-                    }
+                    // فراخوانی متد در کنترلر برای نمایش جایگاه زامبی
+                    Flow.PromptEyeEffect();
                     break;
 
                 case CardType.Zebel:
@@ -243,21 +237,34 @@ namespace AngelVSZombie
                         UI.UpdateStatus("کپی! هیچ کارتی برای کپی کردن در دک سوخته وجود ندارد.");
                     }
                     break;
+
                 case CardType.GraveRubber:
+                    int cardsAdded = 0;
+
+                    // پیدا کردن تمام بازیکنان مرده
                     foreach (var dead in Data.Players.Where(p => !p.IsAlive))
                     {
                         if (dead.Hand.Count > 0)
                         {
-                            Data.Deck.Add(dead.Hand[0]);
-                            dead.Hand.RemoveAt(0);
+                            // انتخاب یک کارت تصادفی از دست بازیکن مرده
+                            int idx = Random.Range(0, dead.Hand.Count);
+                            CardDefinition cardToAdd = dead.Hand[idx];
+
+                            // حذف از دست مرده و اضافه کردن به دک
+                            dead.Hand.RemoveAt(idx);
+                            Data.Deck.Add(cardToAdd);
+                            cardsAdded++;
                         }
                     }
+
+                    // بر زدن دک
                     ShuffleDeck();
-                    foreach (var dead in Data.Players.Where(p => !p.IsAlive))
-                    {
-                        DrawCardFromDeck(dead);
-                    }
-                    UI.UpdateStatus("مرده خوری! همه مرده‌ها کارت عوض کردند.");
+                    UI.UpdateDeckCount(Data.Deck.Count);
+
+                    if (cardsAdded > 0)
+                        UI.UpdateStatus($"مرده خوری! {cardsAdded} کارت از بازیکنان مرده به دک اضافه شد و دک بر زده شد.");
+                    else
+                        UI.UpdateStatus("مرده خوری! هیچ بازیکن مرده‌ای کارتی برای دادن به دک نداشت. دک بر زده شد.");
                     break;
 
                 case CardType.Gift:

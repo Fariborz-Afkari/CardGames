@@ -21,17 +21,21 @@ namespace AngelVSZombie
 
         private void InitReferences()
         {
+            // روت (والد) که همان دکمه است
             if (_root == null)
                 _root = transform.parent != null ? transform.parent.gameObject : gameObject;
 
-            if (CardImage == null) CardImage = _root.GetComponent<Image>();
-            if (CardImage == null) CardImage = GetComponent<Image>();
-            if (CardImage == null) CardImage = GetComponentInChildren<Image>(true);
-
+            // پیدا کردن دکمه از روی والد
             if (Button == null) Button = _root.GetComponent<Button>();
             if (Button == null) Button = GetComponent<Button>();
-            if (Button == null) Button = GetComponentInChildren<Button>(true);
+            if (Button == null) Button = _root.GetComponentInChildren<Button>(true);
 
+            // پیدا کردن تصویر: اول روی والد، بعد خودمان، بعد در فرزندان والد (که شامل خودمان و خواهر/برادرم می‌شود)
+            if (CardImage == null) CardImage = _root.GetComponent<Image>();
+            if (CardImage == null) CardImage = GetComponent<Image>();
+            if (CardImage == null) CardImage = _root.GetComponentInChildren<Image>(true);
+
+            // پیدا کردن متن
             if (ValueText == null) ValueText = _root.GetComponentInChildren<RTLTextMeshPro>(true);
             if (ValueText == null) ValueText = GetComponentInChildren<RTLTextMeshPro>(true);
         }
@@ -90,6 +94,22 @@ namespace AngelVSZombie
                     persian += c;
             }
             return persian;
+        }
+
+        /// <summary>
+        /// این متد برای سازگاری با کدهای قبلی اضافه شده است
+        /// </summary>
+        public void Setup(CardDefinition card, bool faceDown = false, bool interactive = true)
+        {
+            Show(true);          // نمایش کارت (فعال کردن والد)
+            Bind(card);          // تنظیم تصویر و نام
+            SetFaceDown(faceDown); // تنظیم رو یا پشت بودن
+
+            // تنظیم قابلیت کلیک
+            if (Button != null)
+            {
+                Button.interactable = interactive;
+            }
         }
     }
 }

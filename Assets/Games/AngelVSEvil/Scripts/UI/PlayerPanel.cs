@@ -20,7 +20,7 @@ namespace AngelVSZombie
         public Sprite AliveBackground;
         public Sprite DeadBackground;
 
-        private PlayerData _playerData;
+        public PlayerData _playerData;
         private Action<PlayerData> _onTargetClicked;
 
         private void Awake()

@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace AngelVSZombie
 {
@@ -15,6 +17,9 @@ namespace AngelVSZombie
 
         [Header("All Cards")]
         public List<CardDefinition> AllCards;
+
+        [Header("Unique Cards (برای پنل 3 کارتی)")]
+        public List<CardDefinition> AllUniqueCards = new List<CardDefinition>();
 
         private GameData _gameData;
         private GameEngine _engine;
@@ -36,9 +41,48 @@ namespace AngelVSZombie
         private CardDefinition _tempTopCard;
         private CardDefinition _tempSecondCard;
 
+        //private CardDefinition _pendingCard = null;
+        //private PlayerData _pendingPlayer = null;
+        private int _nopeCount = 0;
+        private bool _isNopeWindowOpen = false;
+        private Coroutine _nopeTimerCoroutine;
+
+        public bool IsNopeWindowOpen => _isNopeWindowOpen;
+
+        private int _revealedZombieIndex = -1; // -1 یعنی هیچ زامبی برگشتی وجود ندارد
+
+        private CardDefinition _currentAnimalCard = null;
+        private List<CardDefinition> _animalCardsPlayed = new List<CardDefinition>();
+        private Coroutine _animalTimer = null;
+
+        private PlayerData _activePlayer = null;
+        private List<CardDefinition> _pendingComboList = new List<CardDefinition>();
+        private Coroutine _playTimerCoroutine = null;
+
+        private PlayerData _comboTargetPlayer = null;
+        private System.Action<CardDefinition> _onCardStolenCallback = null;
+
+        private PlayerData _lastNopePlayer = null;
+        public PlayerData LastNopePlayer => _lastNopePlayer; // برای دسترسی از UI
+
+        public CardType? CurrentPendingComboType => _pendingComboList.Count > 0 ? _pendingComboList[0].CardType : (CardType?)null;
+        public bool CanAddToCombo => _pendingComboList.Count > 0 && _pendingComboList.Count < 3;
+
+        public bool HasNopeInCombo => _pendingComboList.Any(c => c.CardType == CardType.Nope);
+
         private void Start()
         {
-            // منتظر تنظیمات از StartPanel
+            if (AllCards != null && AllCards.Count > 0)
+            {
+                AllUniqueCards = AllCards
+                    .Where(c => c.CardType != CardType.Zombie) // *** این خط برای حذف زامبی اضافه شد ***
+                    .GroupBy(c => c.CardType)
+                    .Select(g => g.First())
+                    .OrderBy(c => c.CardType)
+                    .ToList();
+
+                Debug.Log($"لیست کارت‌های یکتا ساخته شد. تعداد کل کارت‌ها: {AllCards.Count} | تعداد کارت‌های یکتا: {AllUniqueCards.Count}");
+            }
         }
 
         // ============================================================
@@ -82,12 +126,6 @@ namespace AngelVSZombie
             StartTurn();
         }
 
-        public void LoadGame()
-        {
-            // فعلاً بازی از نو شروع می‌شود (بعداً می‌توانید منطق ذخیره/بارگذاری اضافه کنید)
-            StartGame(2, 2, 3f);
-        }
-
         private List<PlayerDefinition> BuildPlayerDefinitions(int count)
         {
             var result = new List<PlayerDefinition>();
@@ -116,35 +154,66 @@ namespace AngelVSZombie
         {
             if (card == null) return;
 
-            Debug.Log($"[CardClick] کارت کلیک شده: {card.CardName} | isDying: {_isDying}");
+            PlayerData humanP = GetHumanPlayer();
+            if (humanP == null || !humanP.Hand.Contains(card)) return;
 
-            // اگر بازیکن در حال جان دادن است و روی فرشته کلیک کرد
+            // 1. بررسی حالت مرگ (فرشته)
             if (_isDying)
             {
                 if (card.CardType == CardType.Angel)
                 {
                     _angelClicked = true;
                     UI.UpdateStatus("فرشته انتخاب شد! در حال نجات...");
-                    Debug.Log("[CardClick] _angelClicked = true");
                 }
-                else
-                {
-                    UI.UpdateStatus("شما در حال جان دادن هستید! فقط می‌توانید از فرشته استفاده کنید.");
-                }
-                return; // از ادامه جلوگیری می‌کند
+                return;
             }
 
-            PlayerData human = GetHumanPlayer();
-            if (human == null) return;
-            if (!human.Hand.Contains(card)) return;
-
             bool isHumanTurn = (CurrentState == GameState.PlayerTurn);
-            if (!isHumanTurn && !card.Immediate) return;
-            if (!human.IsAlive && !card.Immediate) return;
 
-            StartCoroutine(PlayCardRoutine(card, human, isHumanTurn));
+            // 2. مدیریت ترکیب‌ها (Combo)
+            if (_pendingComboList.Count > 0)
+            {
+                // اگر در لیست ترکیب فعلی Nope وجود دارد، فقط می‌توان Nope بازی کرد
+                if (HasNopeInCombo && card.CardType != CardType.Nope)
+                {
+                    UI.UpdateStatus("شما فقط می‌توانید کارت Nope بازی کنید یا صبر کنید!");
+                    return;
+                }
+                // اگر Nope در لیست نیست، می‌توان کارت هم‌نوع یا Nope بازی کرد
+                else if (!HasNopeInCombo && card.CardType != _pendingComboList[0].CardType && card.CardType != CardType.Nope)
+                {
+                    UI.UpdateStatus($"شما فقط می‌توانید کارت {_pendingComboList[0].CardName} یا Nope را بازی کنید!");
+                    return;
+                }
+
+                if (_pendingComboList.Count >= 3)
+                {
+                    UI.UpdateStatus("حداکثر می‌توانید 3 کارت را با هم ترکیب کنید!");
+                    return;
+                }
+            }
+            else
+            {
+                // *** این بخش اصلاح شد: شرط مربوط به Nope در خلأ حذف شد ***
+
+                if (!isHumanTurn && !card.Immediate) return;
+                if (!humanP.IsAlive && !card.Immediate) return;
+            }
+
+            // 3. اضافه کردن به ترکیب
+            if (_pendingComboList.Count == 0) _activePlayer = humanP;
+
+            _pendingComboList.Add(card);
+            humanP.Hand.Remove(card);
+
+            UI.ShowCardsOnBoard(_pendingComboList);
+            RefreshHumanHandDisplay();
+
+            // 4. شروع/ریست تایمر
+            _isNopeWindowOpen = true;
+            if (_playTimerCoroutine != null) StopCoroutine(_playTimerCoroutine);
+            _playTimerCoroutine = StartCoroutine(PlayTimerRoutine(humanP, isHumanTurn));
         }
-
         public void HandleZombieDraw(PlayerData player, CardDefinition zombieCard)
         {
             UI.ShowZombiePlace(zombieCard);
@@ -245,7 +314,7 @@ namespace AngelVSZombie
             CheckWinCondition();
             if (CurrentState == GameState.GameOver) return;
 
-            // 1) اگر بازیکن فعلی نوبت اضافه دارد، یکی مصرف کن و دوباره بازی کن
+            // بررسی نوبت‌های اضافه
             if (_gameData.ExtraTurns > 0)
             {
                 _gameData.ExtraTurns--;
@@ -254,7 +323,7 @@ namespace AngelVSZombie
                 return;
             }
 
-            // 2) انتقال به بازیکن زنده بعدی
+            // انتقال به بازیکن زنده بعدی
             int safety = 0;
             do
             {
@@ -263,7 +332,7 @@ namespace AngelVSZombie
                 if (safety > _gameData.Players.Count + 1) { EndGame(); return; }
             } while (!_gameData.Players[_gameData.CurrentPlayerIndex].IsAlive);
 
-            // 3) انتقال نوبت‌های اضافه به بازیکن جدید
+            // انتقال نوبت‌های اضافه به بازیکن جدید
             if (_extraTurnsForNextPlayer > 0)
             {
                 _gameData.ExtraTurns += _extraTurnsForNextPlayer;
@@ -277,69 +346,8 @@ namespace AngelVSZombie
         // تعاملات بازیکن انسانی
         // ============================================================
 
-       
-        private IEnumerator PlayCardRoutine(CardDefinition card, PlayerData player, bool isHumanTurn)
-        {
-            GameState previousState = CurrentState;
 
-            // 1. قفل کردن ورودی‌ها (تا زمانی که افکت اجرا نشده، بازیکن نتواند کارت دیگری بزند)
-            CurrentState = GameState.WaitingForAction;
-            _waitingForInput = false;
 
-            // 2. نمایش کارت روی تخته
-            UI.ShowCardOnBoard(card);
-
-            // 3. تاخیر 3 ثانیه‌ای قبل از اجرای قابلیت
-            yield return new WaitForSeconds(3f);
-
-            // 4. اجرای قابلیت کارت در موتور بازی
-            int extrasBefore = _gameData.ExtraTurns;
-            _engine.PlayCards(player, new List<CardDefinition> { card });
-            ApplyExtrasDelta(extrasBefore);
-
-            // آپدیت UI
-            RefreshHumanHandDisplay();
-            UI.RefreshPlayerPanels();
-
-            // 5. اگر کارت نیاز به تعامل دارد (مثل اوراکل، هدیه، غیب بین و...)
-            if (_waitingForInput)
-            {
-                // روتین متوقف می‌شود تا پرامپت (پنل) باز شود. 
-                // پاک کردن تخته به عهده متد Resolve آن پرامپت است.
-                yield break;
-            }
-
-            // اگر افکت فوری تمام شد
-            UpdateDiscard();
-
-            if (!isHumanTurn)
-            {
-                // اگر کارت Immediate خارج از نوبت بازی شده بود
-                yield return new WaitForSeconds(1f);
-                UI.ClearBoard();
-
-                // بازگرداندن وضعیت به حالت قبل (مثلاً نوبت هوش مصنوعی)
-                CurrentState = previousState;
-                RefreshHumanHandDisplay();
-            }
-            else
-            {
-                // اگر در نوبت خودمان بودیم
-                yield return new WaitForSeconds(1f); // کمی صبر برای دیدن افکت
-                UI.ClearBoard();
-
-                if (_gameData.SkipDraw)
-                {
-                    EndTurn(false);
-                }
-                else
-                {
-                    CurrentState = GameState.PlayerTurn;
-                    RefreshHumanHandDisplay();
-                    UI.UpdateStatus($"نوبت {player.Definition.PlayerName} است. کارت دیگری بازی کنید یا دک بکشید.");
-                }
-            }
-        }
         // این متد را برای مدیریت کارت‌های Immediate خارج از نوبت اضافه کنید
         private IEnumerator FinishImmediatePlayOutOfTurn(GameState previousState)
         {
@@ -355,6 +363,8 @@ namespace AngelVSZombie
         public void OnEndTurnClicked()
         {
             if (CurrentState != GameState.PlayerTurn) return;
+            if (_pendingComboList.Count > 0) return; // در حال ترکیب است
+
             EndTurn(true);
         }
 
@@ -367,15 +377,23 @@ namespace AngelVSZombie
 
             if (shouldDraw && !_gameData.SkipDraw)
             {
+                CurrentState = GameState.WaitingForAction;
+
+                // کشیدن کارت
                 bool isZombie = _engine.DrawCardFromDeck(currentPlayer);
+
+                // *** اینجا همیشه دست بازیکن انسانی را رندر می‌کنیم، نه بازیکن فعلی ***
                 RefreshHumanHandDisplay();
+                UI.UpdateDeckCount(_gameData.Deck.Count);
                 UpdateDiscard();
 
-                // اگر زامبی کشیده شد، روتین زامبی مدیریت نوبت را بر عهده می‌گیرد
                 if (isZombie) return;
-
-                if (CurrentState == GameState.WaitingForAction) return;
-                if (!currentPlayer.IsAlive) { NextTurn(); return; }
+                if (_isDying || _waitingForInput) return;
+                if (!currentPlayer.IsAlive)
+                {
+                    NextTurn();
+                    return;
+                }
             }
 
             NextTurn();
@@ -429,14 +447,11 @@ namespace AngelVSZombie
 
             if (cardToPlay != null)
             {
-                // 1. نمایش کارت روی تخته
+                // نمایش کارت AI روی تخته
                 UI.ShowCardOnBoard(cardToPlay);
+                yield return new WaitForSeconds(1f);
 
-                // 2. تاخیر 3 ثانیه‌ای (تقسیم بر سرعت بازی می‌شود تا اگر سرعت را زیاد کردید، سریع‌تر شود)
-                float delayBeforeEffect = 3f / _speed;
-                yield return new WaitForSeconds(delayBeforeEffect);
-
-                // 3. اجرای افکت
+                // اجرای افکت کارت
                 int extrasBefore = _gameData.ExtraTurns;
                 _engine.PlayCards(aiPlayer, new List<CardDefinition> { cardToPlay });
                 ApplyExtrasDelta(extrasBefore);
@@ -444,16 +459,21 @@ namespace AngelVSZombie
                 UI.RefreshPlayerPanels();
                 UpdateDiscard();
 
-                // 4. کمی صبر بعد از افکت برای درک بهتر
-                yield return new WaitForSeconds(1f / _speed);
-
-                // پاک کردن تخته
+                yield return new WaitForSeconds(1f);
                 UI.ClearBoard();
-                UpdateDiscard();
             }
 
-            if (_gameData.SkipDraw) EndTurn(false);
-            else EndTurn(true);
+            // *** نکته مهم: اگر افکت کارت باعث باز شدن پنلی شد، متوقف شو ***
+            if (_waitingForInput || _isDying) yield break;
+
+            if (_gameData.SkipDraw)
+            {
+                EndTurn(false);
+            }
+            else
+            {
+                EndTurn(true);
+            }
         }
 
         // ============================================================
@@ -568,7 +588,7 @@ namespace AngelVSZombie
             UpdateDiscard();      // فرستادن کارت به دک سوخته
         }
 
-       
+
         private System.Collections.IEnumerator AiZombieDecisionRoutine(PlayerData aiPlayer, CardDefinition zombieCard)
         {
             yield return new UnityEngine.WaitForSeconds(2f);
@@ -582,6 +602,9 @@ namespace AngelVSZombie
             {
                 // 1. زامبی دوباره به دک برمی گردد
                 _gameData.Deck.Add(zombieCard);
+                _engine.ShuffleDeck();
+                // *** ذخیره جایگاه کارت زامبی در دک ***
+                _revealedZombieIndex = _gameData.Deck.IndexOf(zombieCard);
 
                 // 2. فرشته کلا خارج می شود
                 var angel = aiPlayer.Hand.FirstOrDefault(c => c.CardType == CardType.Angel);
@@ -639,7 +662,11 @@ namespace AngelVSZombie
                 // 1. زامبی دوباره به دک برمی گردد و دک شافل می شود
                 _gameData.Deck.Add(zombieCard);
                 _engine.ShuffleDeck();
+                // *** ذخیره جایگاه کارت زامبی در دک ***
+                _revealedZombieIndex = _gameData.Deck.IndexOf(zombieCard);
+
                 UI.UpdateDeckCount(_gameData.Deck.Count);
+
 
                 // 2. کارت فرشته کلا از بازی خارج می شود (به DiscardPile اضافه نمی شود)
                 var angel = player.Hand.FirstOrDefault(c => c.CardType == CardType.Angel);
@@ -719,11 +746,24 @@ namespace AngelVSZombie
         }
 
         // ---------- غیب بین ----------
-        public void PromptEyeEffect(CardDefinition topCard)
+        public void PromptEyeEffect()
         {
             CurrentState = GameState.WaitingForAction;
-            _waitingForInput = true;
-            UI.UpdateStatus($"غیب بین: کارت رویی {topCard.CardName} است. آیا آن را برمی‌دارید؟");
+
+            if (_revealedZombieIndex != -1)
+            {
+                // نمایش جایگاه زامبی به بازیکن (ایندکس از 0 شروع می‌شود، پس +1 می‌کنیم)
+                UI.UpdateStatus($"غیب بین: کارت زامبیِ نجات‌یافته در جایگاه {_revealedZombieIndex + 1} از بالای دک قرار دارد.");
+
+                // افکت مصرف شده و ریست می‌شود
+                _revealedZombieIndex = -1;
+            }
+
+            // چون افکت فوری است، تخته پاک شده و نوبت ادامه می‌یابد
+            UI.ClearBoard();
+            UpdateDiscard();
+            CurrentState = GameState.PlayerTurn;
+            ResumeCurrentPlayerTurn();
         }
 
         public void ResolveEyeEffect(bool takeCard)
@@ -773,7 +813,7 @@ namespace AngelVSZombie
             UpdateDiscard();
 
             // این خط بسیار مهم است!(وضعیت باید به نوبت بازیکن برگردد)
-    CurrentState = GameState.PlayerTurn;
+            CurrentState = GameState.PlayerTurn;
 
             UI.UpdateStatus("پیش گویی تمام شد.");
 
@@ -993,19 +1033,866 @@ namespace AngelVSZombie
         public void EndGame()
         {
             CurrentState = GameState.GameOver;
+
+            // 1. پاک کردن فایل ذخیره‌سازی
+            string path = Path.Combine(Application.persistentDataPath, "savegame.json");
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                Debug.Log("فایل ذخیره‌سازی پس از پایان بازی پاک شد.");
+            }
+
             PlayerPrefs.DeleteKey("SavedGame");
             PlayerPrefs.Save();
 
-            UI.UpdateTurnIndicator(-1); // خاموش کردن همه نشانگرها
-
-            UI.RefreshPlayerPanels();
+            UI.UpdateTurnIndicator(-1);
             UI.ClearBoard();
 
             PlayerData winner = _gameData.Players.FirstOrDefault(p => p.IsAlive);
+
             if (winner != null)
                 UI.UpdateStatus($"بازی تمام شد! برنده: {winner.Definition.PlayerName}");
             else
                 UI.UpdateStatus("بازی تمام شد! همه مردند.");
+
+            // 2. آپدیت وضعیت دکمه Continue
+            UI.UpdateContinueButtonState();
+
+            UI.ShowEndGamePopup(winner);
         }
+
+        
+        private void PlayNope(PlayerData player, CardDefinition nopeCard)
+        {
+            player.Hand.Remove(nopeCard);
+            _gameData.DiscardPile.Add(nopeCard);
+            _nopeCount++;
+
+            // *** ذخیره کسی که این Nope را بازی کرده ***
+            _lastNopePlayer = player;
+
+            UI.UpdateStatus($"{player.Definition.PlayerName} کارت باطل (Nope) بازی کرد! (تعداد: {_nopeCount})");
+            UI.ShowCardsOnBoard(_pendingComboList);
+            RefreshHumanHandDisplay();
+            UpdateDiscard();
+
+            if (_playTimerCoroutine != null) StopCoroutine(_playTimerCoroutine);
+            _playTimerCoroutine = StartCoroutine(PlayTimerRoutine(_activePlayer, CurrentState == GameState.PlayerTurn));
+        }
+
+        //private IEnumerator PlayTimerRoutine(PlayerData player, bool isHumanTurn)
+        //{
+        //    // اگر بازیکن انسانی Nope زد، به هوش مصنوعی 1.5 ثانیه فرصت بده تا جواب بدهد
+        //    if (player.Definition.IsHuman && _nopeCount > 0)
+        //    {
+        //        yield return new WaitForSeconds(1f); // صبر کوتاه
+
+        //        // پیدا کردن یک هوش مصنوعی که Nope دارد
+        //        var aiWithNope = _gameData.Players.FirstOrDefault(p => !p.Definition.IsHuman && p.IsAlive && p.Hand.Any(c => c.CardType == CardType.Nope));
+        //        if (aiWithNope != null && Random.value < 0.7f) // 70% شانس پاسخ
+        //        {
+        //            var nopeCard = aiWithNope.Hand.First(c => c.CardType == CardType.Nope);
+        //            PlayNope(aiWithNope, nopeCard);
+        //            yield break; // PlayNope خودش تایمر را دوباره استارت می‌زند
+        //        }
+        //    }
+
+        //    yield return new WaitForSeconds(3f); // تایمر اصلی 3 ثانیه
+
+        //    _isNopeWindowOpen = false;
+
+        //    // اگر تعداد Nope فرد باشد، افکت کارت‌ها باطل می‌شود
+        //    if (_nopeCount % 2 != 0)
+        //    {
+        //        UI.UpdateStatus("قابلیت کارت با Nope باطل شد!");
+        //        foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+        //        ResetPlaySequence();
+        //        HandleTurnEndAfterPlay(player, isHumanTurn);
+        //        yield break;
+        //    }
+
+        //    // اجرای قابلیت کارت‌ها
+        //    if (_pendingComboList.Count == 1)
+        //    {
+        //        CardDefinition card = _pendingComboList[0];
+        //        if (CanCardEffectExecute(card))
+        //        {
+        //            UI.UpdateStatus($"اجرای {card.CardName}");
+        //            _gameData.DiscardPile.Add(card);
+
+        //            int extrasBefore = _gameData.ExtraTurns;
+        //            _engine.ResolveCardEffect(player, card); // اجرای مستقیم افکت
+        //            ApplyExtrasDelta(extrasBefore);
+        //        }
+        //        else
+        //        {
+        //            // اگر قابلیت تکی نداشت (مثل حیوانات یا شرایط نامناسب)
+        //            UI.UpdateStatus($"قابلیت {card.CardName} به تنهایی قابل اجرا نیست و به بانک بازگشت.");
+        //            player.Hand.Add(card); // بازگشت به دست
+        //        }
+        //    }
+        //    else if (_pendingComboList.Count == 2)
+        //    {
+        //        UI.UpdateStatus("ترکیب دو کارتی فعال شد!");
+
+        //        if (isHumanTurn)
+        //        {
+        //            // اگر بازیکن انسانی است، پنل را نشان بده
+        //            var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player).ToList();
+
+        //            if (aliveTargets.Count == 0)
+        //            {
+        //                UI.UpdateStatus("هیچ بازیکن زنده‌ای برای گرفتن کارت وجود ندارد.");
+        //                foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+        //                ResetPlaySequence();
+        //                HandleTurnEndAfterPlay(player, isHumanTurn);
+        //                yield break;
+        //            }
+
+        //            CurrentState = GameState.WaitingForAction;
+        //            _waitingForInput = true;
+
+        //            // باز کردن پنل انتخاب
+        //            UI.ShowPlayerSelectionForCombo(aliveTargets, (selectedTarget) =>
+        //            {
+        //                ResolveTwoCardCombo(selectedTarget);
+        //            });
+
+        //            yield break; // روتین متوقف می‌شود تا کاربر انتخاب کند
+        //        }
+        //        else
+        //        {
+        //            // اگر هوش مصنوعی است، خودکار از یک بازیکن تصادفی کارت می‌دزدد
+        //            var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player && p.Hand.Count > 0).ToList();
+        //            if (aliveTargets.Count > 0)
+        //            {
+        //                var target = aliveTargets[Random.Range(0, aliveTargets.Count)];
+        //                int randomIdx = Random.Range(0, target.Hand.Count);
+        //                CardDefinition stolenCard = target.Hand[randomIdx];
+
+        //                target.Hand.RemoveAt(randomIdx);
+        //                player.Hand.Add(stolenCard);
+
+        //                UI.UpdateStatus($"{player.Definition.PlayerName} یک کارت از {target.Definition.PlayerName} دزدید!");
+        //            }
+        //            else
+        //            {
+        //                UI.UpdateStatus("هیچ بازیکنی کارت نداشت.");
+        //            }
+
+        //            foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+        //            ResetPlaySequence();
+        //            HandleTurnEndAfterPlay(player, isHumanTurn);
+        //        }
+        //    }
+        //    else if (_pendingComboList.Count == 3)
+        //    {
+        //        UI.UpdateStatus("ترکیب سه کارتی فعال شد!");
+
+        //        if (isHumanTurn)
+        //        {
+        //            var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player).ToList();
+
+        //            if (aliveTargets.Count == 0)
+        //            {
+        //                UI.UpdateStatus("هیچ بازیکن زنده‌ای برای گرفتن کارت وجود ندارد.");
+        //                foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+        //                ResetPlaySequence();
+        //                HandleTurnEndAfterPlay(player, isHumanTurn);
+        //                yield break;
+        //            }
+
+        //            CurrentState = GameState.WaitingForAction;
+        //            _waitingForInput = true;
+
+        //            // مرحله 1: انتخاب بازیکن
+        //            UI.ShowThreeCardComboTargetSelection(aliveTargets, (selectedTarget) =>
+        //            {
+        //                // *** استفاده از لیست کارت‌های یکتا ***
+        //                UI.ShowThreeCardComboCardSelection(AllUniqueCards, (selectedCard) =>
+        //                {
+        //                    ResolveThreeCardCombo(selectedTarget, selectedCard, player);
+        //                });
+        //            });
+
+        //            yield break;
+        //        }
+        //        else
+        //        {
+        //            // هوش مصنوعی: انتخاب تصادفی بازیکن و کارت از لیست یکتا
+        //            var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player).ToList();
+        //            if (aliveTargets.Count > 0)
+        //            {
+        //                var target = aliveTargets[Random.Range(0, aliveTargets.Count)];
+        //                var requestedCard = AllUniqueCards[Random.Range(0, AllUniqueCards.Count)];
+
+        //                ResolveThreeCardCombo(target, requestedCard, player);
+        //            }
+        //            else
+        //            {
+        //                foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+        //                ResetPlaySequence();
+        //                HandleTurnEndAfterPlay(player, isHumanTurn);
+        //            }
+        //        }
+        //    }
+
+        //    ResetPlaySequence();
+        //    HandleTurnEndAfterPlay(player, isHumanTurn);
+        //}
+        private IEnumerator PlayTimerRoutine(PlayerData player, bool isHumanTurn)
+        {
+            // 1. صبر 3 ثانیه‌ای
+            yield return new WaitForSeconds(3f);
+
+            _isNopeWindowOpen = false;
+
+            int nopeCount = _pendingComboList.Count(c => c.CardType == CardType.Nope);
+            int totalCards = _pendingComboList.Count;
+
+            // اگر تعداد Nope ها فرد باشد و کارت غیر Nope هم وجود داشته باشد -> کارت غیر Nope باطل می‌شود
+            if (nopeCount % 2 != 0 && totalCards > nopeCount)
+            {
+                UI.UpdateStatus("افکت کارت اصلی با Nope باطل شد.");
+                foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+                ResetPlaySequence();
+                HandleTurnEndAfterPlay(player, isHumanTurn);
+                yield break;
+            }
+
+            // در غیر این صورت، تعداد کل کارت‌ها تعیین‌کننده نوع ترکیب است
+            if (totalCards == 1)
+            {
+                // اجرای تک کارتی
+                CardDefinition card = _pendingComboList[0];
+                if (CanCardEffectExecute(card))
+                {
+                    UI.UpdateStatus($"اجرای {card.CardName}");
+                    _gameData.DiscardPile.Add(card);
+
+                    int extrasBefore = _gameData.ExtraTurns;
+                    _engine.ResolveCardEffect(player, card);
+                    ApplyExtrasDelta(extrasBefore);
+
+                    ResetPlaySequence();
+                    HandleTurnEndAfterPlay(player, isHumanTurn);
+                }
+                else
+                {
+                    // *** کارت به بانک برمی‌گردد و نوبت از دست نمی‌رود ***
+                    UI.UpdateStatus($"قابلیت {card.CardName} در این لحظه قابل اجرا نیست و به بانک بازگشت.");
+                    player.Hand.Add(card);
+                    ResetPlaySequence();
+
+                    UI.ClearBoard();
+                    UpdateDiscard();
+                    RefreshHumanHandDisplay();
+                    UI.RefreshPlayerPanels();
+
+                    if (isHumanTurn)
+                    {
+                        // بازیکن انسانی نوبت خود را ادامه می‌دهد (حتی اگر SkipDraw ست شده باشد)
+                        CurrentState = GameState.PlayerTurn;
+                        UI.UpdateStatus($"نوبت {player.Definition.PlayerName} است. کارت دیگری بازی کنید یا دک بکشید.");
+                    }
+                    else
+                    {
+                        // برای هوش مصنوعی، برای جلوگیری از حلقه بی‌پایان، نوبتش پایان می‌یابد
+                        EndTurn(true);
+                    }
+                }
+                ResetPlaySequence();
+                HandleTurnEndAfterPlay(player, isHumanTurn);
+            }
+            else if (totalCards == 2)
+            {
+                // اجرای ترکیب دو کارتی (چه هر دو Nope باشند، چه دو کارت هم‌نوع)
+                UI.UpdateStatus("ترکیب دو کارتی فعال شد!");
+
+                if (isHumanTurn)
+                {
+                    var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player).ToList();
+
+                    if (aliveTargets.Count == 0)
+                    {
+                        UI.UpdateStatus("هیچ بازیکن زنده‌ای برای گرفتن کارت وجود ندارد.");
+                        foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+                        ResetPlaySequence();
+                        HandleTurnEndAfterPlay(player, isHumanTurn);
+                        yield break;
+                    }
+
+                    CurrentState = GameState.WaitingForAction;
+                    _waitingForInput = true;
+
+                    // *** باز کردن پنل برای حالت 2 کارتی ***
+                    UI.ShowPlayerSelectionForCombo(aliveTargets, (selectedTarget) =>
+                    {
+                        ResolveTwoCardCombo(selectedTarget);
+                    });
+
+                    yield break;
+                }
+                else
+                {
+                    // هوش مصنوعی
+                    var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player && p.Hand.Count > 0).ToList();
+                    if (aliveTargets.Count > 0)
+                    {
+                        var target = aliveTargets[Random.Range(0, aliveTargets.Count)];
+                        int randomIdx = Random.Range(0, target.Hand.Count);
+                        CardDefinition stolenCard = target.Hand[randomIdx];
+
+                        target.Hand.RemoveAt(randomIdx);
+                        player.Hand.Add(stolenCard);
+                        UI.UpdateStatus($"{player.Definition.PlayerName} یک کارت از {target.Definition.PlayerName} دزدید!");
+                    }
+                    else
+                    {
+                        UI.UpdateStatus("هیچ بازیکنی کارت نداشت.");
+                    }
+
+                    foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+                    ResetPlaySequence();
+                    HandleTurnEndAfterPlay(player, isHumanTurn);
+                }
+            }
+            else if (totalCards == 3)
+            {
+                // اجرای ترکیب سه کارتی (چه سه Nope باشند، چه سه کارت هم‌نوع)
+                UI.UpdateStatus("ترکیب سه کارتی فعال شد!");
+
+                if (isHumanTurn)
+                {
+                    var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player).ToList();
+
+                    if (aliveTargets.Count == 0)
+                    {
+                        UI.UpdateStatus("هیچ بازیکن زنده‌ای برای گرفتن کارت وجود ندارد.");
+                        foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+                        ResetPlaySequence();
+                        HandleTurnEndAfterPlay(player, isHumanTurn);
+                        yield break;
+                    }
+
+                    CurrentState = GameState.WaitingForAction;
+                    _waitingForInput = true;
+
+                    // *** باز کردن پنل برای حالت 3 کارتی ***
+                    UI.ShowThreeCardComboTargetSelection(aliveTargets, (selectedTarget) =>
+                    {
+                        UI.ShowThreeCardComboCardSelection(AllUniqueCards, (selectedCard) =>
+                        {
+                            ResolveThreeCardCombo(selectedTarget, selectedCard, player);
+                        });
+                    });
+
+                    yield break;
+                }
+                else
+                {
+                    // هوش مصنوعی
+                    var aliveTargets = _gameData.Players.Where(p => p.IsAlive && p != player).ToList();
+                    if (aliveTargets.Count > 0)
+                    {
+                        var target = aliveTargets[Random.Range(0, aliveTargets.Count)];
+                        var requestedCard = AllUniqueCards[Random.Range(0, AllUniqueCards.Count)];
+                        ResolveThreeCardCombo(target, requestedCard, player);
+                    }
+                    else
+                    {
+                        foreach (var c in _pendingComboList) _gameData.DiscardPile.Add(c);
+                        ResetPlaySequence();
+                        HandleTurnEndAfterPlay(player, isHumanTurn);
+                    }
+                }
+            }
+        }
+        private void ResolveTwoCardCombo(PlayerData target)
+        {
+            if (!_waitingForInput || target == null) return;
+            _waitingForInput = false;
+
+            // بستن پنل
+            UI.HidePlayerDetailsPopup();
+
+            PlayerData currentPlayer = _gameData.Players[_gameData.CurrentPlayerIndex];
+
+            if (target.Hand.Count > 0)
+            {
+                // انتخاب کارت تصادفی از بازیکن هدف (چون کارت‌ها پشت بودند)
+                int randomIdx = Random.Range(0, target.Hand.Count);
+                CardDefinition stolenCard = target.Hand[randomIdx];
+
+                target.Hand.RemoveAt(randomIdx);       // کم کردن از حریف
+                currentPlayer.Hand.Add(stolenCard);    // اضافه به بانک ما
+
+                UI.UpdateStatus($"کارت {stolenCard.CardName} از {target.Definition.PlayerName} گرفته شد.");
+            }
+            else
+            {
+                UI.UpdateStatus("بازیکن انتخاب شده کارتی نداشت.");
+            }
+
+            // انتقال کارت‌های ترکیب به دک سوخته
+            foreach (var c in _pendingComboList)
+            {
+                _gameData.DiscardPile.Add(c);
+            }
+
+            // پایان نوبت
+            ResetPlaySequence();
+            UpdateDiscard();
+            RefreshHumanHandDisplay();
+            CurrentState = GameState.PlayerTurn;
+            HandleTurnEndAfterPlay(currentPlayer, true);
+        }
+        private void ResolveThreeCardCombo(PlayerData target, CardDefinition requestedCard, PlayerData currentPlayer)
+        {
+            if (!_waitingForInput && currentPlayer.Definition.IsHuman) return;
+            _waitingForInput = false;
+
+            UI.HidePlayerDetailsPopup();
+
+            // بررسی اینکه آیا بازیکن هدف کارت درخواستی را دارد یا نه
+            CardDefinition foundCard = target.Hand.FirstOrDefault(c => c.CardType == requestedCard.CardType);
+
+            if (foundCard != null)
+            {
+                target.Hand.Remove(foundCard);
+                currentPlayer.Hand.Add(foundCard);
+                UI.UpdateStatus($"{currentPlayer.Definition.PlayerName} یک {foundCard.CardName} از {target.Definition.PlayerName} گرفت.");
+            }
+            else
+            {
+                UI.UpdateStatus($"{target.Definition.PlayerName} کارت {requestedCard.CardName} را نداشت. سه کارت شما سوخت!");
+            }
+
+            // در هر صورت (موفق یا ناموفق)، هر 3 کارت ترکیب به دک سوخته می‌روند
+            foreach (var c in _pendingComboList)
+            {
+                _gameData.DiscardPile.Add(c);
+            }
+
+            ResetPlaySequence();
+            UpdateDiscard();
+            RefreshHumanHandDisplay();
+            CurrentState = GameState.PlayerTurn;
+            HandleTurnEndAfterPlay(currentPlayer, currentPlayer.Definition.IsHuman);
+        }
+        // بررسی اینکه آیا قابلیت کارت در حالت تکی قابل اجراست یا خیر
+        private bool CanCardEffectExecute(CardDefinition card)
+        {
+            switch (card.CardType)
+            {
+                case CardType.Cat:
+                case CardType.Rooster:
+                case CardType.Lama:
+                case CardType.Squash:
+                    return false; // کارت‌های حیوانات قابلیت تکی ندارند
+                case CardType.Clone:
+                    if (_gameData.DiscardPile.Count == 0) return false;
+                    if (_gameData.DiscardPile[_gameData.DiscardPile.Count - 1].CardType == CardType.Clone) return false;
+                    return true;
+                case CardType.FeedDead:
+                    return _gameData.Players.Any(p => !p.IsAlive);
+                case CardType.Eye:
+                    return _revealedZombieIndex != -1; // فقط بعد از نجات با فرشته
+                case CardType.Gift:
+                    return _gameData.Players.Any(p => p.IsAlive && p != _activePlayer);
+                case CardType.Nope:
+                    return false; // Nope فقط در پنجره Nope قابل بازی است
+                case CardType.DeadsAttack: // *** این بخش جدید اضافه شد ***
+                    return _gameData.Players.Any(p => !p.IsAlive); // حمله ارواح فقط با وجود مرده کار می‌کند
+                case CardType.GraveRubber:
+                    return _gameData.Players.Any(p => !p.IsAlive); // مرده خوری فقط با وجود مرده کار می‌کند
+
+                default:
+                    return true; // بقیه کارت‌ها (حمله، برزدن، اوراکل و...) قابل اجرا هستند
+            }
+        }
+
+        // ریست کردن وضعیت بازی
+        private void ResetPlaySequence()
+        {
+            _activePlayer = null;
+            _pendingComboList.Clear();
+            _isNopeWindowOpen = false;
+            _nopeCount = 0;
+            _lastNopePlayer = null; // *** ریست کردن ***
+
+            if (_playTimerCoroutine != null)
+            {
+                StopCoroutine(_playTimerCoroutine);
+                _playTimerCoroutine = null;
+            }
+        }
+
+        // مدیریت پایان نوبت پس از اجرای کارت
+        private void HandleTurnEndAfterPlay(PlayerData player, bool isHumanTurn)
+        {
+            UI.ClearBoard();
+            UpdateDiscard();
+            RefreshHumanHandDisplay();
+            UI.RefreshPlayerPanels();
+
+            if (CurrentState == GameState.GameOver) return;
+            if (_waitingForInput) return; // اگر پنلی باز شد (مثل اوراکل)
+
+            if (isHumanTurn)
+            {
+                if (_gameData.SkipDraw)
+                {
+                    EndTurn(false);
+                }
+                else
+                {
+                    CurrentState = GameState.PlayerTurn;
+                    RefreshHumanHandDisplay();
+                    UI.UpdateStatus($"نوبت {player.Definition.PlayerName} است. کارت دیگری بازی کنید یا دک بکشید.");
+                }
+            }
+            else
+            {
+                EndTurn(true); // پایان نوبت هوش مصنوعی
+            }
+        }
+        //private IEnumerator NopeWindowTimer(bool isHumanTurn, GameState previousState)
+        //{
+        //yield return new WaitForSeconds(3f);
+
+        //_isNopeWindowOpen = false;
+        //UI.ClearBoard();
+
+        //// اگر تعداد Nope ها زوج بود (یا صفر)، افکت کارت اجرا می‌شود
+        //if (_nopeCount % 2 == 0)
+        //{
+        //    if (_nopeCount > 0)
+        //        UI.UpdateStatus("با توجه به تعداد زوج Nope، افکت کارت فعال شد.");
+
+        //    // اجرای افکت کارت (این متد خودش کارت را از دست حذف و به دک سوخته اضافه می‌کند)
+        //    int extrasBefore = _gameData.ExtraTurns;
+        //    _engine.PlayCards(_pendingPlayer, new List<CardDefinition> { _pendingCard });
+        //    ApplyExtrasDelta(extrasBefore);
+        //    UI.RefreshPlayerPanels();
+        //    UpdateDiscard();
+
+        //    if (CurrentState == GameState.GameOver) yield break;
+
+        //    if (_waitingForInput) // اگر کارت نیاز به پنل داشت (مثل اوراکل)
+        //    {
+        //        _pendingCard = null;
+        //        yield break;
+        //    }
+
+        //    if (!isHumanTurn)
+        //    {
+        //        yield return new WaitForSeconds(1f);
+        //        UI.ClearBoard();
+        //        CurrentState = previousState;
+        //        RefreshHumanHandDisplay();
+        //    }
+        //    else
+        //    {
+        //        yield return new WaitForSeconds(1f);
+        //        UI.ClearBoard();
+        //        if (_gameData.SkipDraw) EndTurn(false);
+        //        else
+        //        {
+        //            CurrentState = GameState.PlayerTurn;
+        //            RefreshHumanHandDisplay();
+        //            UI.UpdateStatus($"نوبت {_pendingPlayer.Definition.PlayerName} است.");
+        //        }
+        //    }
+        //}
+        //else
+        //{
+        //    // تعداد Nope فرد بود: افکت کارت باطل می‌شود
+        //    UI.UpdateStatus("با توجه به تعداد فرد Nope، افکت کارت باطل شد!");
+
+        //    // *** اصلاح مهم: انتقال کارت باطل شده به دک سوخته ***
+        //    if (_pendingCard != null && _pendingPlayer != null)
+        //    {
+        //        _pendingPlayer.Hand.Remove(_pendingCard);
+        //        _gameData.DiscardPile.Add(_pendingCard);
+        //    }
+
+        //    RefreshHumanHandDisplay(); // آپدیت دست بازیکن
+        //    UpdateDiscard();           // آپدیت دک سوخته
+
+        //    if (!isHumanTurn)
+        //    {
+        //        yield return new WaitForSeconds(1f);
+        //        CurrentState = previousState;
+        //        RefreshHumanHandDisplay();
+        //        NextTurn(); // اگر هوش مصنوعی بود، نوبتش تمام می‌شود
+        //    }
+        //    else
+        //    {
+        //        yield return new WaitForSeconds(1f);
+        //        if (_gameData.SkipDraw) EndTurn(false);
+        //        else
+        //        {
+        //            CurrentState = GameState.PlayerTurn;
+        //            RefreshHumanHandDisplay();
+        //            UI.UpdateStatus("افکت باطل شد. کارت دیگری بازی کنید یا دک بکشید.");
+        //        }
+        //    }
+        //}
+
+        //_pendingCard = null;
+        //_pendingPlayer = null;
+        //}
+
+
+        private bool IsAnimalCard(CardDefinition card)
+        {
+            return card.CardType == CardType.Cat ||
+                   card.CardType == CardType.Rooster ||
+                   card.CardType == CardType.Lama ||
+                   card.CardType == CardType.Squash;
+        }
+
+        private void HandleAnimalCardPlayed(CardDefinition card, PlayerData player)
+        {
+            // اگر در حال جمع‌آوری حیوان هستیم و کارت جدید با قبلی فرق دارد
+            if (_currentAnimalCard != null && _currentAnimalCard.CardType != card.CardType)
+            {
+                UI.UpdateStatus("شما باید کارتی از همان نوع حیوان قبلی بازی کنید یا 3 ثانیه صبر کنید!");
+                return;
+            }
+
+            // اگر توالی به 3 رسیده بود، اجازه بازی کارت چهارم را نده
+            if (_animalCardsPlayed.Count >= 3)
+            {
+                UI.UpdateStatus("قابلیت سه‌تایی فعال شده است. لطفاً صبر کنید.");
+                return;
+            }
+
+            // اگر توالی جدید است
+            if (_currentAnimalCard == null)
+            {
+                _currentAnimalCard = card;
+            }
+
+            // حذف از دست و اضافه به لیست بازی شده‌ها
+            player.Hand.Remove(card);
+            _animalCardsPlayed.Add(card);
+
+            // نمایش در اسلات‌ها
+            UI.ShowCardsOnBoard(_animalCardsPlayed);
+            RefreshHumanHandDisplay();
+
+            // مدیریت تایمر
+            if (_animalTimer != null) StopCoroutine(_animalTimer);
+
+            if (_animalCardsPlayed.Count == 3)
+            {
+                // قابلیت سه‌تایی
+                UI.UpdateStatus($"کارت سوم ({card.CardName}) آمد! قابلیت سه‌تایی فعال شد. (در حال پیاده‌سازی)");
+                StartCoroutine(FinishAnimalSequence(player));
+            }
+            else
+            {
+                // شروع تایمر 3 ثانیه‌ای برای کارت دوم یا سوم
+                _animalTimer = StartCoroutine(AnimalTimerRoutine(player));
+            }
+        }
+
+        private IEnumerator AnimalTimerRoutine(PlayerData player)
+        {
+            yield return new WaitForSeconds(3f);
+
+            if (_animalCardsPlayed.Count == 1)
+            {
+                // کارت اول تنها ماند
+                UI.UpdateStatus($"کارت {_currentAnimalCard.CardName} تک بود و به دک سوخته رفت.");
+                _gameData.DiscardPile.Add(_animalCardsPlayed[0]);
+
+                ResetAnimalSequence();
+                UI.ClearBoard();
+                UpdateDiscard();
+                CurrentState = GameState.PlayerTurn;
+                RefreshHumanHandDisplay();
+            }
+            else if (_animalCardsPlayed.Count == 2)
+            {
+                // کارت دوم هم آمد اما سوم نیامد
+                UI.UpdateStatus($"کارت دوم ({_currentAnimalCard.CardName}) آمد! قابلیت دوتایی فعال شد. (در حال پیاده‌سازی)");
+
+                // در اینجا بعد از 1.5 ثانیه مکث، کارت‌ها را به دک سوخته می‌فرستیم
+                yield return new WaitForSeconds(1.5f);
+                StartCoroutine(FinishAnimalSequence(player));
+            }
+        }
+
+        private IEnumerator FinishAnimalSequence(PlayerData player)
+        {
+            yield return new WaitForSeconds(1.5f); // مکث کوتاه برای دیدن نتیجه
+
+            // انتقال همه کارت‌های حیوان به دک سوخته
+            foreach (var c in _animalCardsPlayed)
+            {
+                _gameData.DiscardPile.Add(c);
+            }
+
+            ResetAnimalSequence();
+
+            UI.ClearBoard();
+            UpdateDiscard();
+            CurrentState = GameState.PlayerTurn;
+            RefreshHumanHandDisplay();
+            UI.UpdateStatus("نوبت شما ادامه دارد.");
+        }
+
+        private void ResetAnimalSequence()
+        {
+            _currentAnimalCard = null;
+            _animalCardsPlayed.Clear();
+            if (_animalTimer != null)
+            {
+                StopCoroutine(_animalTimer);
+                _animalTimer = null;
+            }
+        }
+
+        //------------- ذخیره سازی ---------------
+        public bool HasSavedGame()
+        {
+            string path = Path.Combine(Application.persistentDataPath, "savegame.json");
+            return File.Exists(path);
+        }
+
+        public void SaveGame()
+        {
+            if (_gameData == null) return;
+
+            // متوقف کردن هرگونه عملیات در حال اجرا (مثل نوبت هوش مصنوعی)
+            StopAllCoroutines();
+            CurrentState = GameState.PlayerTurn; // ذخیره در حالت نوبت بازیکن
+
+            SaveData data = new SaveData();
+
+            // ذخیره کارت‌های دک، دک سوخته و گورستان بر اساس نام
+            data.DeckCards = _gameData.Deck.Select(c => c.CardName).ToList();
+            data.DiscardPileCards = _gameData.DiscardPile.Select(c => c.CardName).ToList();
+            data.GraveyardCards = _gameData.Graveyard.Select(c => c.CardName).ToList();
+
+            data.CurrentPlayerIndex = _gameData.CurrentPlayerIndex;
+            data.ExtraTurns = _gameData.ExtraTurns;
+            data.SkipDraw = _gameData.SkipDraw;
+
+            // ذخیره اطلاعات بازیکنان
+            foreach (var player in _gameData.Players)
+            {
+                PlayerSaveData pData = new PlayerSaveData
+                {
+                    PlayerName = player.Definition.PlayerName,
+                    AvatarIndex = player.Definition.AvatarIndex,
+                    IsHuman = player.Definition.IsHuman,
+                    IsAlive = player.IsAlive,
+                    HasAngel = player.HasAngel,
+                    HandCardNames = player.Hand.Select(c => c.CardName).ToList()
+                };
+                data.Players.Add(pData);
+            }
+
+            string json = JsonUtility.ToJson(data, true);
+            string path = Path.Combine(Application.persistentDataPath, "savegame.json");
+            File.WriteAllText(path, json);
+
+            Debug.Log($"بازی در مسیر {path} ذخیره شد.");
+        }
+
+        public void LoadGame()
+        {
+            // 1. بررسی ایمنی برای UI (مهم‌ترین بخش)
+            if (UI == null)
+                UI = FindObjectOfType<GameUIController>();
+
+            if (UI == null)
+            {
+                Debug.LogError("GameUIController پیدا نشد! نمی‌توان بازی را لود کرد.");
+                return;
+            }
+
+            string path = Path.Combine(Application.persistentDataPath, "savegame.json");
+            if (!File.Exists(path))
+            {
+                Debug.LogError("فایل ذخیره‌سازی پیدا نشد!");
+                return;
+            }
+
+            string json = File.ReadAllText(path);
+            SaveData data = JsonUtility.FromJson<SaveData>(json);
+
+            if (data == null)
+            {
+                Debug.LogError("داده‌های فایل ذخیره‌سازی نامعتبر است!");
+                return;
+            }
+
+            // بازسازی دیتای بازی
+            _gameData = new GameData();
+
+            // تابع کمکی برای پیدا کردن کارت بر اساس نام
+            CardDefinition FindCard(string cardName)
+            {
+                if (AllCards == null) return null;
+                return AllCards.FirstOrDefault(c => c.CardName == cardName);
+            }
+
+            _gameData.Deck = data.DeckCards.Select(FindCard).Where(c => c != null).ToList();
+            _gameData.DiscardPile = data.DiscardPileCards.Select(FindCard).Where(c => c != null).ToList();
+            _gameData.Graveyard = data.GraveyardCards.Select(FindCard).Where(c => c != null).ToList();
+
+            _gameData.CurrentPlayerIndex = data.CurrentPlayerIndex;
+            _gameData.ExtraTurns = data.ExtraTurns;
+            _gameData.SkipDraw = data.SkipDraw;
+
+            _gameData.Players.Clear();
+            if (PlayerDefinitions == null) PlayerDefinitions = new List<PlayerDefinition>();
+
+            foreach (var pData in data.Players)
+            {
+                // پیدا کردن تعریف بازیکن از روی اسم
+                var def = PlayerDefinitions.FirstOrDefault(p => p.PlayerName == pData.PlayerName);
+                if (def == null)
+                {
+                    def = ScriptableObject.CreateInstance<PlayerDefinition>();
+                    def.PlayerName = pData.PlayerName;
+                    def.AvatarIndex = pData.AvatarIndex;
+                    def.IsHuman = pData.IsHuman;
+                    PlayerDefinitions.Add(def); // اضافه کردن به لیست برای استفاده‌های بعدی
+                }
+
+                PlayerData p = new PlayerData(def);
+                p.IsAlive = pData.IsAlive;
+                p.HasAngel = pData.HasAngel;
+                p.Hand = pData.HandCardNames.Select(FindCard).Where(c => c != null).ToList();
+
+                _gameData.Players.Add(p);
+            }
+
+            // مقداردهی مجدد موتور بازی
+            _engine = new GameEngine(_gameData, UI, this);
+
+            // آپدیت UI
+            UI.BuildPlayerPanels(_gameData.Players);
+            UI.UpdateDeckCount(_gameData.Deck.Count);
+            UpdateDiscard();
+            RefreshHumanHandDisplay();
+
+            // پاکسازی تخته و پنل‌ها
+            UI.ClearBoard();
+            UI.HideGiftTargetPopup(); // اگر پنلی باز مانده بود
+
+            // شروع مجدد نوبت
+            CurrentState = GameState.PlayerTurn;
+            StartTurn();
+        }
+
+        //------------------- Animation ---------------
+      
     }
 }

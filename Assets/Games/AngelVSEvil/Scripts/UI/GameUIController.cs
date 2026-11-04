@@ -1,5 +1,8 @@
+using DeadManDraws;
 using RTLTMPro;
+using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -21,6 +24,7 @@ namespace AngelVSZombie
         public Button GroupGameButton;
         public Button HelpButton;
         public Button StartPanelBackButton;
+        public Button SceneBackButton;
 
         [Header("New Game Panel")]
         public Slider PlayerNumSlider;
@@ -46,6 +50,7 @@ namespace AngelVSZombie
         [Header("Game UI Elements")]
         public RTLTextMeshPro DeckCountText;
         public RTLTextMeshPro StatusText;
+        public RTLTextMeshPro StatusText2;
         public Button EndTurnButton;
 
         [Header("Player Area (PlayerPanel ها)")]
@@ -78,9 +83,11 @@ namespace AngelVSZombie
         public List<CardWidget> OracleSlots = new List<CardWidget>(); // دقیقاً 3 اسلات
         public Button CloseOracleButton;
 
-        [Header("Gift Target Popup")]
+        [Header("Player Details Popup (Gift & Combo)")]
         public GameObject PlayerDetailsPopup;
         public Transform TargetContainer;
+        public Transform TargetCardContainer; // کانتینر جدید برای کارت‌های حریف
+        public GameObject TargetCardPrefab;   // یک پریفب ساده شامل یک دکمه با عکس پشت کارت
 
         [Header("Zombie Place (منطقه زامبی)")]
         public List<CardWidget> ZombiePlaceSlots = new List<CardWidget>();
@@ -97,6 +104,17 @@ namespace AngelVSZombie
         [Header("Feed Dead Popup")]
         public GameObject FeedDeadPopup;
         public Transform FeedDeadContainer;
+
+        [Header("End Game Popup")]
+        public GameObject EndGamePopup;
+        public Image EndGamePlayerImage;
+        public RTLTextMeshPro EndGamePlayerName;
+        public Button EndGamePopup_CloseButton;
+
+        [Header("Combo System")]
+        [Tooltip("پریفب مخصوص نمایش کارت‌ها در پنل 3 کارتی (ساختار: Button والد، و Image و CardWidget فرزند)")]
+        public GameObject ComboCardPrefab;
+
 
         private void Awake()
         {
@@ -121,6 +139,18 @@ namespace AngelVSZombie
             SetupPlayerNumSlider();
             SetupHardnessSlider();
             SetupSpeedSlider();
+            if (SceneBackButton != null)
+            { 
+                SceneBackButton.onClick.AddListener(() => {
+                    // فقط اگر بازی تمام نشده باشد، ذخیره کن
+                    if (FlowController != null && FlowController.CurrentState != GameState.GameOver)
+                    {
+                        FlowController.SaveGame();
+                    }
+                    ShowPanel(StartPanel);
+                    UpdateContinueButtonState(); // بررسی مجدد اینکه دکمه Continue فعال شود
+                });
+            }
             if (Start_Button != null) Start_Button.onClick.AddListener(OnNewGameStartClicked);
             if (NewGamePanelBackButton != null) NewGamePanelBackButton.onClick.AddListener(() => ShowPanel(StartPanel));
 
@@ -170,6 +200,16 @@ namespace AngelVSZombie
             // مخفی کردن اولیه پنل
             if (OraclePopup != null) OraclePopup.SetActive(false);
             if (TunnelPopup != null) TunnelPopup.SetActive(false);
+
+            // تنظیمات پنل پایان بازی
+            if (EndGamePopup != null) EndGamePopup.SetActive(false);
+            if (EndGamePopup_CloseButton != null)
+            {
+                EndGamePopup_CloseButton.onClick.AddListener(() =>
+                {
+                    if (EndGamePopup != null) EndGamePopup.SetActive(false);
+                });
+            }
         }
 
         // ------------------ Slider Setup ------------------
@@ -212,11 +252,38 @@ namespace AngelVSZombie
 
         private void OnSpeedChanged(float value)
         {
-            if (lblSpeed != null) lblSpeed.text = $"سرعت: {value}";
+            if (lblSpeed != null) lblSpeed.text = $"{value}";
         }
 
         // ------------------ Panel Management ------------------
+        public void ShowEndGamePopup(PlayerData winner)
+        {
+            if (EndGamePopup == null) return;
 
+            EndGamePopup.SetActive(true);
+
+            if (winner != null)
+            {
+                if (EndGamePlayerName != null)
+                    EndGamePlayerName.text = $"{winner.Definition.PlayerName}";
+
+                if (EndGamePlayerImage != null && Avatars != null && Avatars.Length > 0)
+                {
+                    int idx = Mathf.Clamp(winner.Definition.AvatarIndex, 0, Avatars.Length - 1);
+                    if (Avatars[idx] != null)
+                    {
+                        EndGamePlayerImage.sprite = Avatars[idx];
+                        EndGamePlayerImage.preserveAspect = true;
+                    }
+                }
+            }
+            else
+            {
+                // حالت مساوی (همه مردند)
+                if (EndGamePlayerName != null)
+                    EndGamePlayerName.text = "بازی مساوی شد!";
+            }
+        }
         private void ShowPanel(GameObject panelToShow)
         {
             if (StartPanel != null) StartPanel.SetActive(false);
@@ -226,18 +293,24 @@ namespace AngelVSZombie
             if (panelToShow != null) panelToShow.SetActive(true);
         }
 
-        private void UpdateContinueButtonState()
+        public void UpdateContinueButtonState()
         {
-            bool hasSave = PlayerPrefs.HasKey("SavedGame");
-            if (ContinueButton != null) ContinueButton.interactable = hasSave;
+            if (ContinueButton != null)
+            {
+                // بررسی وجود فایل ذخیره با استفاده از متد کنترلر
+                bool hasSave = FlowController != null && FlowController.HasSavedGame();
+                ContinueButton.interactable = hasSave;
+            }
         }
 
         private void OnContinueClicked()
         {
-            if (!PlayerPrefs.HasKey("SavedGame")) return;
+            if (FlowController == null || !FlowController.HasSavedGame()) return;
+
             ShowPanel(null);
             if (GameplayElements != null) GameplayElements.SetActive(true);
-            FlowController.LoadGame();
+
+            FlowController.LoadGame(); // بارگذاری بازی
         }
 
         private void OnBackClicked()
@@ -252,11 +325,13 @@ namespace AngelVSZombie
             int hardness = Mathf.RoundToInt(HardnessSlider != null ? HardnessSlider.value : 2);
             float speed = SpeedSlider != null ? SpeedSlider.value : 3f;
 
-            PlayerPrefs.SetInt("SavedGame", 1);
-            PlayerPrefs.Save();
+            // پاک کردن فایل ذخیره قبلی
+            string path = System.IO.Path.Combine(Application.persistentDataPath, "savegame.json");
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
 
             ShowPanel(null);
             if (GameplayElements != null) GameplayElements.SetActive(true);
+
             FlowController.StartGame(playerCount, hardness, speed);
         }
 
@@ -298,16 +373,95 @@ namespace AngelVSZombie
 
         public void UpdateDeckCount(int count)
         {
-            if (DeckCountText != null) DeckCountText.text = $"دک: {count}";
+            if (DeckCountText != null) DeckCountText.text = $"{count}";
         }
 
         public void UpdateStatus(string message)
         {
             if (StatusText != null) StatusText.text = message;
+            if (StatusText2 != null) StatusText2.text = message;
         }
 
         // ------------------ PlayerBank Render (همیشه دست بازیکن انسانی) ------------------
+        //public void RenderHand(PlayerData player)
+        //{
+        //    if (player == null) return;
 
+        //    bool isHumanTurn = FlowController != null && FlowController.CurrentState == GameState.PlayerTurn;
+        //    bool isDying = FlowController != null && FlowController.IsPlayerDying;
+
+        //    var groupedCards = player.Hand
+        //        .GroupBy(c => c.CardType)
+        //        .Select(g => new { CardDef = g.First(), Count = g.Count() })
+        //        .OrderBy(g => g.CardDef.CardType)
+        //        .ToList();
+
+        //    for (int i = 0; i < PlayerBankWidgets.Count; i++)
+        //    {
+        //        CardWidget widget = PlayerBankWidgets[i];
+        //        if (widget == null) continue;
+
+        //        if (i < groupedCards.Count)
+        //        {
+        //            widget.Show(true);
+        //            widget.Bind(groupedCards[i].CardDef, groupedCards[i].Count);
+
+        //            if (widget.Button != null)
+        //            {
+        //                bool canPlay = false;
+
+        //                if (isDying)
+        //                {
+        //                    canPlay = (groupedCards[i].CardDef.CardType == CardType.Angel);
+        //                }
+        //                else if (FlowController != null && FlowController.IsNopeWindowOpen)
+        //                {
+        //                    // *** اصلاح منطق: در زمان Nope چه کارت‌هایی فعال باشند؟ ***
+
+        //                    if (groupedCards[i].CardDef.CardType == CardType.Nope)
+        //                    {
+        //                        // 1. کارت Nope (اگر خودمان آخرین Nope را نزده باشیم)
+        //                        canPlay = (FlowController.LastNopePlayer != player);
+        //                    }
+        //                    else if (FlowController.CanAddToCombo &&
+        //                             groupedCards[i].CardDef.CardType == FlowController.CurrentPendingComboType)
+        //                    {
+        //                        // 2. کارت‌های هم‌نوع با کارتی که در حال ترکیب است (برای 2 یا 3 کارتی)
+        //                        canPlay = true;
+        //                    }
+        //                    else
+        //                    {
+        //                        canPlay = false;
+        //                    }
+        //                }
+        //                else
+        //                {
+        //                    bool isImmediate = groupedCards[i].CardDef.Immediate;
+        //                    canPlay = (isHumanTurn && player.IsAlive) || isImmediate;
+        //                }
+
+        //                widget.Button.interactable = canPlay;
+        //            }
+        //        }
+        //        else
+        //        {
+        //            widget.Show(false);
+        //            widget.Bind(null);
+        //        }
+        //    }
+
+        //    if (DeckButton != null)
+        //    {
+        //        // اگر در حال ترکیب کارت‌ها هستید (CanAddToCombo == true)، دکمه دک غیرفعال می‌شود
+        //        bool canDraw = isHumanTurn && player.IsAlive && !isDying;
+        //        if (FlowController != null && FlowController.CanAddToCombo)
+        //        {
+        //            canDraw = false;
+        //        }
+
+        //        DeckButton.interactable = canDraw;
+        //    }
+        //}
         public void RenderHand(PlayerData player)
         {
             if (player == null) return;
@@ -315,12 +469,12 @@ namespace AngelVSZombie
             bool isHumanTurn = FlowController != null && FlowController.CurrentState == GameState.PlayerTurn;
             bool isDying = FlowController != null && FlowController.IsPlayerDying;
 
-            var groupedCards = System.Linq.Enumerable.ToList(
-                System.Linq.Enumerable.Select(
-                    System.Linq.Enumerable.GroupBy(player.Hand, c => c.CardType),
-                    g => new { CardDef = g.First(), Count = g.Count() }
-                )
-            );
+            // مرتب‌سازی کارت‌ها برای ثابت ماندن ترتیب آن‌ها در بانک
+            var groupedCards = player.Hand
+                .GroupBy(c => c.CardType)
+                .Select(g => new { CardDef = g.First(), Count = g.Count() })
+                .OrderBy(g => g.CardDef.CardType)
+                .ToList();
 
             for (int i = 0; i < PlayerBankWidgets.Count; i++)
             {
@@ -338,8 +492,23 @@ namespace AngelVSZombie
 
                         if (isDying)
                         {
-                            // اگر در حال مردن هستیم، فقط فرشته قابل کلیک باشد
+                            // فقط فرشته در حالت مرگ فعال است
                             canPlay = (groupedCards[i].CardDef.CardType == CardType.Angel);
+                        }
+                        else if (FlowController != null && FlowController.IsNopeWindowOpen)
+                        {
+                            // منطق زمان باز بودن پنجره Nope
+                            if (FlowController.HasNopeInCombo)
+                            {
+                                // اگر Nope در ترکیب هست، فقط Nope قابل کلیک است
+                                canPlay = (groupedCards[i].CardDef.CardType == CardType.Nope);
+                            }
+                            else
+                            {
+                                // اگر کارت اصلی در ترکیب است، هم کارت هم‌نوع و هم Nope قابل کلیک هستند
+                                canPlay = (groupedCards[i].CardDef.CardType == FlowController.CurrentPendingComboType) ||
+                                          (groupedCards[i].CardDef.CardType == CardType.Nope);
+                            }
                         }
                         else
                         {
@@ -349,16 +518,6 @@ namespace AngelVSZombie
                         }
 
                         widget.Button.interactable = canPlay;
-
-                        // لاگ برای دیباگ
-                        if (groupedCards[i].CardDef.CardType == CardType.Angel)
-                        {
-                            Debug.Log($"[RenderHand] کارت فرشته پیدا شد. isDying={isDying}, interactable={canPlay}");
-                        }
-                    }
-                    else
-                    {
-                        Debug.LogWarning($"[RenderHand] دکمه برای کارت {groupedCards[i].CardDef.CardName} پیدا نشد!");
                     }
                 }
                 else
@@ -368,9 +527,18 @@ namespace AngelVSZombie
                 }
             }
 
+            // دکمه دک (Deck)
             if (DeckButton != null)
             {
-                DeckButton.interactable = isHumanTurn && player.IsAlive && !isDying;
+                bool canDraw = isHumanTurn && player.IsAlive && !isDying;
+
+                // اگر در حال ترکیب کارت‌ها هستید (CanAddToCombo == true)، دکمه دک غیرفعال می‌شود
+                if (FlowController != null && FlowController.CanAddToCombo)
+                {
+                    canDraw = false;
+                }
+
+                DeckButton.interactable = canDraw;
             }
         }
         public void ClearPlayerBank()
@@ -660,5 +828,173 @@ namespace AngelVSZombie
             foreach (Transform child in FeedDeadContainer)
                 Destroy(child.gameObject);
         }
+
+        // ------------------ مدیریت پنل انتخاب بازیکن و کارت ------------------
+
+        public void ShowPlayerSelectionForCombo(List<PlayerData> targets, System.Action<PlayerData> onTargetSelected)
+        {
+            if (PlayerDetailsPopup != null) PlayerDetailsPopup.SetActive(true);
+
+            // پاک کردن کانتینرها
+            foreach (Transform child in TargetContainer) Destroy(child.gameObject);
+            foreach (Transform child in TargetCardContainer) Destroy(child.gameObject);
+
+            // ساخت پنل برای هر بازیکن
+            foreach (var target in targets)
+            {
+                GameObject go = Instantiate(PlayerPanelPrefab, TargetContainer);
+                PlayerPanel panel = go.GetComponent<PlayerPanel>();
+                if (panel != null)
+                {
+                    panel.Setup(target, Avatars);
+                    // اگر بازیکن کارتی نداشت، قابل کلیک نباشد
+                    if (target.Hand.Count > 0)
+                    {
+                        panel.SetAsTarget((clickedTarget) =>
+                        {
+                            // وقتی بازیکن کلیک شد، کارت‌هایش را نشان بده
+                            ShowTargetCards(clickedTarget, onTargetSelected);
+                        });
+                    }
+                    else
+                    {
+                        panel.SetAsTarget(null); // غیرفعال
+                    }
+                }
+            }
+        }
+
+        private void ShowTargetCards(PlayerData target, System.Action<PlayerData> onTargetSelected)
+        {
+            // پاک کردن کانتینر بازیکنان (اختیاری: می‌توانید آن‌ها را نگه دارید)
+            foreach (Transform child in TargetContainer) Destroy(child.gameObject);
+
+            // ساخت کارت‌های پشت‌رو برای حریف
+            foreach (var card in target.Hand)
+            {
+                GameObject cardObj = Instantiate(TargetCardPrefab, TargetCardContainer);
+                Button btn = cardObj.GetComponent<Button>();
+
+                if (btn != null)
+                {
+                    btn.onClick.RemoveAllListeners();
+                    btn.onClick.AddListener(() =>
+                    {
+                        // وقتی روی کارت کلیک شد، بازیکن را به کنترلر پاس می‌دهیم
+                        // کارت خاص را نمی‌توانیم پاس دهیم چون پشت است و کاربر نمی‌داند چیست
+                        onTargetSelected?.Invoke(target);
+                    });
+                }
+            }
+        }
+
+        public void HidePlayerDetailsPopup()
+        {
+            if (PlayerDetailsPopup != null) PlayerDetailsPopup.SetActive(false);
+            foreach (Transform child in TargetContainer) Destroy(child.gameObject);
+            foreach (Transform child in TargetCardContainer) Destroy(child.gameObject);
+        }
+
+        // متد نمایش لیست بازیکنان برای انتخاب (برای 3 کارتی)
+        public void ShowThreeCardComboTargetSelection(List<PlayerData> targets, System.Action<PlayerData> onTargetSelected)
+        {
+            if (PlayerDetailsPopup != null) PlayerDetailsPopup.SetActive(true);
+
+            // پاک کردن کانتینرها
+            foreach (Transform child in TargetContainer) Destroy(child.gameObject);
+            foreach (Transform child in TargetCardContainer) Destroy(child.gameObject);
+
+            // ساخت پنل برای هر بازیکن
+            foreach (var target in targets)
+            {
+                GameObject go = Instantiate(PlayerPanelPrefab, TargetContainer);
+                PlayerPanel panel = go.GetComponent<PlayerPanel>();
+                if (panel != null)
+                {
+                    panel.Setup(target, Avatars);
+                    panel.SetAsTarget((clickedTarget) =>
+                    {
+                        onTargetSelected?.Invoke(clickedTarget);
+                    });
+                }
+            }
+        }
+
+        // متد نمایش لیست ثابت کارت‌ها (برای 3 کارتی)
+        public void ShowThreeCardComboCardSelection(List<CardDefinition> uniqueCards, System.Action<CardDefinition> onCardSelected)
+        {
+            // پاک کردن کانتینرها
+            foreach (Transform child in TargetContainer) Destroy(child.gameObject);
+            foreach (Transform child in TargetCardContainer) Destroy(child.gameObject);
+
+            if (TargetCardContainer != null)
+                TargetCardContainer.gameObject.SetActive(true);
+
+            if (ComboCardPrefab == null)
+            {
+                Debug.LogError("ComboCardPrefab در Inspector به GameUIController متصل نشده است!");
+                return;
+            }
+
+            // ساخت کارت‌ها
+            foreach (var card in uniqueCards)
+            {
+                // استفاده از متغیر جدید
+                GameObject cardObj = Instantiate(ComboCardPrefab, TargetCardContainer);
+
+                // پیدا کردن CardWidget در فرزندان (چون روی روت نیست)
+                CardWidget widget = cardObj.GetComponentInChildren<CardWidget>(true);
+
+                if (widget != null)
+                {
+                    widget.Setup(card, faceDown: false, interactive: true);
+
+                    // گرفتن دکمه (از خود ویجت یا روت)
+                    Button btn = widget.Button;
+                    if (btn == null) btn = cardObj.GetComponent<Button>();
+
+                    if (btn != null)
+                    {
+                        btn.onClick.RemoveAllListeners();
+                        btn.onClick.AddListener(() =>
+                        {
+                            onCardSelected?.Invoke(card);
+                        });
+                        btn.interactable = true;
+                    }
+                }
+                else
+                {
+                    Debug.LogError("اسکریپت CardWidget در پریفب ComboCardPrefab پیدا نشد!");
+                }
+            }
+        }
+
+        //-------------- Animation ------------------
+        // پیدا کردن مکان پنل هر بازیکن (برای انیمیشن‌های AI یا حریف)
+        public RectTransform GetPlayerPanelTransform(PlayerData player)
+        {
+            for (int i = 0; i < _playerPanels.Count; i++) // یا _playerPanels
+            {
+                if (_playerPanels[i].GetComponent<PlayerPanel>()._playerData == player)
+                    return _playerPanels[i].GetComponent<RectTransform>();
+            }
+            return PlayerArea.GetComponent<RectTransform>(); // در صورت عدم پیدا شدن، به کل منطقه برگردد
+        }
+
+        // گرفتن لیست کارت‌های فعال روی تخته (برای انیمیشن شماره 5)
+        public List<CardWidget> GetActiveBoardCards()
+        {
+            List<CardWidget> activeCards = new List<CardWidget>();
+            foreach (var slot in BoardSlots)
+            {
+                if (slot != null && slot.BoundCard != null && slot.gameObject.activeInHierarchy)
+                {
+                    activeCards.Add(slot);
+                }
+            }
+            return activeCards;
+        }
+
     }
 }

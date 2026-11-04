@@ -216,25 +216,38 @@ namespace AngelVSZombie
                     break;
 
                 case CardType.Clone:
-                    // بررسی می‌کنیم که آیا کارتی برای کپی کردن وجود دارد یا نه
-                    // (چون کارت کپی جدید الان به دک سوخته اضافه شده، باید یکی عقب‌تر را نگاه کنیم)
-                    if (Data.DiscardPile.Count >= 2)
-                    {
-                        CardDefinition cardToCopy = Data.DiscardPile[Data.DiscardPile.Count - 2];
+                    // ابتدا باید مطمئن شویم کارت قبلی (که الان در LastPlayedCard است) وجود دارد
+                    // نکته: در PlayTimerRoutine قبل از فراخوانی این متد، کارت Clone به DiscardPile اضافه شده
+                    // و Data.LastPlayedCard هنوز همان کارت قبلی است (چون در ابتدای این متد بازنویسی می‌شود)
 
-                        if (cardToCopy.CardType == CardType.Clone)
+                    // پس ابتدا کارت قبلی را از یک جای مطمئن می‌خوانیم:
+                    // آخرین کارتی که SUCCESSFULLY اجرا شده و در DiscardPile هست (بدون در نظر گرفتن کارت Clone که تازه اضافه شده)
+                    CardDefinition cardToCopy = null;
+
+                    // از انتهای DiscardPile به عقب می‌گردیم تا اولین کارت غیر Clone را پیدا کنیم
+                    for (int i = Data.DiscardPile.Count - 2; i >= 0; i--)
+                    {
+                        if (Data.DiscardPile[i].CardType != CardType.Clone)
                         {
-                            UI.UpdateStatus("کپی نامعتبر! (نمی‌توان روی کپی، کپی کرد)");
+                            cardToCopy = Data.DiscardPile[i];
+                            break;
                         }
-                        else
-                        {
-                            UI.UpdateStatus($"کپی! افکت کارت {cardToCopy.CardName} تکرار می‌شود.");
-                            ResolveCardEffect(player, cardToCopy);
-                        }
+                    }
+
+                    if (cardToCopy != null)
+                    {
+                        UI.UpdateStatus($"کپی! افکت کارت {cardToCopy.CardName} تکرار می‌شود.");
+
+                        // ⚠️ قبل از اجرای کارت کپی شده، باید حالت "کارت در حال اجرا" را ذخیره کنیم
+                        // چون ResolveCardEffect در ابتدای خودش LastPlayedCard را بازنویسی می‌کند
+                        // و اگر کارت کپی شده هم Clone باشد (که نیست چون بالا فیلتر کردیم)، دوباره مشکل پیش می‌آید
+
+                        // اجرای افکت کارت کپی شده
+                        ResolveCardEffect(player, cardToCopy);
                     }
                     else
                     {
-                        UI.UpdateStatus("کپی! هیچ کارتی برای کپی کردن در دک سوخته وجود ندارد.");
+                        UI.UpdateStatus("کپی! هیچ کارت معتبری در دک سوخته برای کپی کردن وجود ندارد.");
                     }
                     break;
 

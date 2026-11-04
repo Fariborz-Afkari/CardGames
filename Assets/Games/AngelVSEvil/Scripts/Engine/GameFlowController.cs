@@ -45,7 +45,7 @@ namespace AngelVSZombie
         //private PlayerData _pendingPlayer = null;
         private int _nopeCount = 0;
         private bool _isNopeWindowOpen = false;
-        private Coroutine _nopeTimerCoroutine;
+        public float GameSpeed => _speed / 3f; // سرعت پیش‌فرض 3 است، پس GameSpeed=1 حالت عادی است
 
         public bool IsNopeWindowOpen => _isNopeWindowOpen;
 
@@ -69,6 +69,9 @@ namespace AngelVSZombie
         public bool CanAddToCombo => _pendingComboList.Count > 0 && _pendingComboList.Count < 3;
 
         public bool HasNopeInCombo => _pendingComboList.Any(c => c.CardType == CardType.Nope);
+
+        [Header("Animation")]
+        public UiAnimation UiAnimator;
 
         private void Start()
         {
@@ -294,19 +297,54 @@ namespace AngelVSZombie
 
             _gameData.SkipDraw = false;
 
+            // محاسبه تعداد کل نوبت‌های باقی‌مانده (1 + نوبت‌های اضافه)
+            int totalTurnsLeft = _gameData.ExtraTurns + 1;
+
             if (currentPlayer.Definition.IsHuman)
             {
                 CurrentState = GameState.PlayerTurn;
                 RefreshHumanHandDisplay();
-                UI.UpdateStatus($"نوبت {currentPlayer.Definition.PlayerName} است. کارت بازی کنید یا دک بکشید.");
+
+                if (totalTurnsLeft > 1)
+                {
+                    UI.UpdateStatus($"نوبت {currentPlayer.Definition.PlayerName} است. شما {ToPersianNumber(totalTurnsLeft)} مرتبه باید بازی کنید.");
+                }
+                else
+                {
+                    UI.UpdateStatus($"نوبت {currentPlayer.Definition.PlayerName} است. کارت بازی کنید یا دک بکشید.");
+                }
             }
             else
             {
                 CurrentState = GameState.AiTurn;
-                RefreshHumanHandDisplay(); // فقط نمایش
-                UI.UpdateStatus($"نوبت {currentPlayer.Definition.PlayerName} (هوش مصنوعی).");
+                RefreshHumanHandDisplay(); // فقط نمایش دست بازیکن انسانی
+
+                if (totalTurnsLeft > 1)
+                {
+                    UI.UpdateStatus($"نوبت {currentPlayer.Definition.PlayerName} (هوش مصنوعی). {ToPersianNumber(totalTurnsLeft)} نوبت باقی مانده.");
+                }
+                else
+                {
+                    UI.UpdateStatus($"نوبت {currentPlayer.Definition.PlayerName} (هوش مصنوعی).");
+                }
+
                 StartCoroutine(AiTurnCoroutine(currentPlayer));
             }
+        }
+
+        // *** متد کمکی برای تبدیل اعداد انگلیسی به فارسی ***
+        private string ToPersianNumber(int number)
+        {
+            string english = number.ToString();
+            string persian = "";
+            foreach (char c in english)
+            {
+                if (c >= '0' && c <= '9')
+                    persian += char.ConvertFromUtf32(c - '0' + '۰');
+                else
+                    persian += c;
+            }
+            return persian;
         }
 
         public void NextTurn()
@@ -368,6 +406,36 @@ namespace AngelVSZombie
             EndTurn(true);
         }
 
+        //private void EndTurn(bool shouldDraw)
+        //{
+        //    if (CurrentState == GameState.GameOver) return;
+        //    UI.ClearBoard();
+
+        //    PlayerData currentPlayer = _gameData.Players[_gameData.CurrentPlayerIndex];
+
+        //    if (shouldDraw && !_gameData.SkipDraw)
+        //    {
+        //        CurrentState = GameState.WaitingForAction;
+
+        //        // کشیدن کارت
+        //        bool isZombie = _engine.DrawCardFromDeck(currentPlayer);
+
+        //        // *** اینجا همیشه دست بازیکن انسانی را رندر می‌کنیم، نه بازیکن فعلی ***
+        //        RefreshHumanHandDisplay();
+        //        UI.UpdateDeckCount(_gameData.Deck.Count);
+        //        UpdateDiscard();
+
+        //        if (isZombie) return;
+        //        if (_isDying || _waitingForInput) return;
+        //        if (!currentPlayer.IsAlive)
+        //        {
+        //            NextTurn();
+        //            return;
+        //        }
+        //    }
+
+        //    NextTurn();
+        //}
         private void EndTurn(bool shouldDraw)
         {
             if (CurrentState == GameState.GameOver) return;
@@ -377,28 +445,66 @@ namespace AngelVSZombie
 
             if (shouldDraw && !_gameData.SkipDraw)
             {
+                // قفل کردن ورودی‌ها در حین انیمیشن
                 CurrentState = GameState.WaitingForAction;
 
-                // کشیدن کارت
-                bool isZombie = _engine.DrawCardFromDeck(currentPlayer);
-
-                // *** اینجا همیشه دست بازیکن انسانی را رندر می‌کنیم، نه بازیکن فعلی ***
-                RefreshHumanHandDisplay();
-                UI.UpdateDeckCount(_gameData.Deck.Count);
-                UpdateDiscard();
-
-                if (isZombie) return;
-                if (_isDying || _waitingForInput) return;
-                if (!currentPlayer.IsAlive)
-                {
-                    NextTurn();
-                    return;
-                }
+                // شروع Coroutine کشیدن کارت با انیمیشن
+                StartCoroutine(DrawAndEndTurnRoutine(currentPlayer));
             }
+            else
+            {
+                NextTurn();
+            }
+        }
+
+        private IEnumerator DrawAndEndTurnRoutine(PlayerData player)
+        {
+            Debug.Log($"[GameFlow] DrawAndEndTurnRoutine شروع شد. بازیکن: {player.Definition.PlayerName}");
+
+            CardDefinition topCard = _gameData.Deck.Count > 0 ? _gameData.Deck[0] : null;
+
+            if (topCard == null)
+            {
+                Debug.LogWarning("[GameFlow] کارت رویی دک NULL است!");
+            }
+
+            bool animationDone = false;
+
+            if (player.Definition.IsHuman && topCard != null && UiAnimator != null)
+            {
+                Debug.Log("[GameFlow] فراخوانی UiAnimator.AnimateDrawCard");
+                UiAnimator.AnimateDrawCard(topCard, () => {
+                    Debug.Log("[GameFlow] انیمیشن تمام شد (Callback)");
+                    animationDone = true;
+                });
+
+                float timer = 0f;
+                while (!animationDone && timer < 3f)
+                {
+                    timer += Time.deltaTime;
+                    yield return null;
+                }
+
+                if (!animationDone) Debug.LogWarning("[GameFlow] انیمیشن تایم‌اوت شد و کامل نشد!");
+            }
+            else
+            {
+                Debug.Log($"[GameFlow] انیمیشن اجرا نشد. IsHuman={player.Definition.IsHuman}, topCard={(topCard != null)}, UiAnimator={(UiAnimator != null)}");
+                yield return new WaitForSeconds(0.2f);
+            }
+
+            Debug.Log("[GameFlow] کشیدن واقعی کارت");
+            bool isZombie = _engine.DrawCardFromDeck(player);
+            RefreshHumanHandDisplay();
+            UI.UpdateDeckCount(_gameData.Deck.Count);
+            UpdateDiscard();
+
+            if (isZombie) yield break;
+            if (_isDying || _waitingForInput) yield break;
+            if (!player.IsAlive) { NextTurn(); yield break; }
 
             NextTurn();
         }
-
         private IEnumerator FinishImmediatePlay()
         {
             yield return new WaitForSeconds(1.2f);
@@ -908,6 +1014,14 @@ namespace AngelVSZombie
 
             UI.HideTunnelPopup();
 
+            // اجرای منطق در یک Coroutine تا از تداخل با کلیک UI جلوگیری شود
+            StartCoroutine(ResolveTunnelSelectionRoutine(takeTopCard));
+        }
+
+        private IEnumerator ResolveTunnelSelectionRoutine(bool takeTopCard)
+        {
+            Debug.Log($"[Tunnel] شروع حل و فصل. takeTopCard={takeTopCard}");
+
             PlayerData player = _gameData.Players[_gameData.CurrentPlayerIndex];
 
             CardDefinition selectedCard = takeTopCard ? _tempTopCard : _tempSecondCard;
@@ -917,12 +1031,12 @@ namespace AngelVSZombie
             if (selectedCard != null && selectedCard.CardType == CardType.Zombie)
             {
                 UI.UpdateStatus("شما زامبی کشیدید!");
-
-                // کارت دیگر به بالای دک برمی‌گردد
                 if (unselectedCard != null) _gameData.Deck.Insert(0, unselectedCard);
 
                 HandleZombieDraw(player, selectedCard);
-                return;
+                _tempTopCard = null;
+                _tempSecondCard = null;
+                yield break;
             }
 
             // اگر کارت معمولی بود، به دست بازیکن اضافه می‌شود
@@ -935,12 +1049,30 @@ namespace AngelVSZombie
             // کارت دیگر به بالای دک برمی‌گردد
             if (unselectedCard != null) _gameData.Deck.Insert(0, unselectedCard);
 
+            // پاکسازی مقادیر موقت
+            _tempTopCard = null;
+            _tempSecondCard = null;
+
+            // آپدیت UI
             RefreshHumanHandDisplay();
             UpdateDiscard();
             UI.ClearBoard();
 
-            // چون کارت تونل یک نوبت بازی حساب می‌شود، نوبت را رد می‌کنیم
-            EndTurn(false);
+            // *** نکته کلیدی: انتقال هرگونه نوبت اضافه باقی‌مانده به بازیکن بعدی ***
+            if (_gameData.ExtraTurns > 0)
+            {
+                _extraTurnsForNextPlayer += _gameData.ExtraTurns;
+                _gameData.ExtraTurns = 0;
+            }
+
+            // اطمینان از اینکه وضعیت به نوبت بازیکن برگشته
+            CurrentState = GameState.PlayerTurn;
+
+            // صبر یک فریم برای اینکه UI آپدیت شود
+            yield return null;
+
+            Debug.Log("[Tunnel] فراخوانی NextTurn");
+            NextTurn();
         }
 
         // ---------- خیرات ----------
@@ -1060,7 +1192,6 @@ namespace AngelVSZombie
 
             UI.ShowEndGamePopup(winner);
         }
-
         
         private void PlayNope(PlayerData player, CardDefinition nopeCard)
         {
@@ -1275,7 +1406,20 @@ namespace AngelVSZombie
                     ApplyExtrasDelta(extrasBefore);
 
                     ResetPlaySequence();
-                    HandleTurnEndAfterPlay(player, isHumanTurn);
+                    //HandleTurnEndAfterPlay(player, isHumanTurn);
+                    // *** اگر کارت حمله بود، نوبت فوراً به بازیکن بعدی منتقل می‌شود ***
+                    if (card.CardType == CardType.Attack)
+                    {
+                        UI.ClearBoard();
+                        UpdateDiscard();
+                        RefreshHumanHandDisplay();
+                        UI.RefreshPlayerPanels();
+                        NextTurn(); // NextTurn خودش ExtraTurns را به بازیکن بعدی می‌دهد
+                    }
+                    else
+                    {
+                        HandleTurnEndAfterPlay(player, isHumanTurn);
+                    }
                 }
                 else
                 {

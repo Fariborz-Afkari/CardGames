@@ -1,0 +1,341 @@
+using System.Collections.Generic;
+using System.Linq;
+using UnityEngine;
+
+namespace AngelVSZombie
+{
+    public class GameEngine
+    {
+        public GameData Data;
+        public GameUIController UI;
+        public GameFlowController Flow;
+
+        public GameEngine(GameData data, GameUIController ui, GameFlowController flow)
+        {
+            Data = data;
+            UI = ui;
+            Flow = flow;
+        }
+
+        public void SetupGame(List<PlayerDefinition> playerDefs, List<CardDefinition> allCards)
+        {
+            Data.Players.Clear();
+            foreach (var def in playerDefs)
+            {
+                Data.Players.Add(new PlayerData(def));
+            }
+
+            var deck = new List<CardDefinition>(allCards);
+
+            var zombies = deck.Where(c => c.CardType == CardType.Zombie).ToList();
+            var angels = deck.Where(c => c.CardType == CardType.Angel).ToList();
+            var others = deck.Where(c => c.CardType != CardType.Zombie && c.CardType != CardType.Angel).ToList();
+
+            Data.Deck.Clear();
+            Data.Deck.AddRange(others);
+
+            // ابتدا کارت‌های غیرزامبی را شافل می‌کنیم تا بازیکنان زامبی نگیرند
+            ShuffleDeck();
+
+            // پخش 7 کارت به هر بازیکن
+            foreach (var player in Data.Players)
+            {
+                for (int i = 0; i < 7; i++)
+                {
+                    player.Hand.Add(Data.Deck[0]);
+                    Data.Deck.RemoveAt(0);
+                }
+
+                // دادن 1 فرشته به هر بازیکن
+                if (angels.Count > 0)
+                {
+                    player.Hand.Add(angels[0]);
+                    angels.RemoveAt(0);
+                    player.HasAngel = true;
+                }
+            }
+
+            // حالا زامبی‌ها و فرشته‌های اضافی را به دک اضافه می‌کنیم
+            int zombieCount = Data.Players.Count - 1;
+            for (int i = 0; i < zombieCount && i < zombies.Count; i++)
+            {
+                Data.Deck.Add(zombies[i]);
+            }
+
+            int extraAngelCount = Data.Players.Count == 4 ? 1 : 0;
+            for (int i = 0; i < extraAngelCount && i < angels.Count; i++)
+            {
+                Data.Deck.Add(angels[i]);
+            }
+
+            ShuffleDeck();
+            UI.UpdateDeckCount(Data.Deck.Count);
+        }
+
+        // متد کشیدن کارت حالا یک bool برمی‌گرداند تا به کنترلر بگوید آیا زامبی کشیده شده یا نه
+        public bool DrawCardFromDeck(PlayerData player)
+        {
+            if (Data.Deck.Count == 0)
+            {
+                UI.UpdateStatus("دک خالی است!");
+                return false;
+            }
+
+            CardDefinition drawn = Data.Deck[0];
+            Data.Deck.RemoveAt(0);
+            UI.UpdateDeckCount(Data.Deck.Count);
+
+            if (drawn.CardType == CardType.Zombie)
+            {
+                Flow.HandleZombieDraw(player, drawn);
+                return true;
+            }
+            else
+            {
+                player.Hand.Add(drawn);
+                return false;
+            }
+        }
+        public void ShuffleDeck()
+        {
+            for (int i = 0; i < Data.Deck.Count; i++)
+            {
+                CardDefinition temp = Data.Deck[i];
+                int randomIndex = Random.Range(i, Data.Deck.Count);
+                Data.Deck[i] = Data.Deck[randomIndex];
+                Data.Deck[randomIndex] = temp;
+            }
+        }
+
+        
+        public void HandleZombieDraw(PlayerData player)
+        {
+            if (player.HasAngel)
+            {
+                UI.UpdateStatus($"{player.Definition.PlayerName} زامبی کشید! آیا از فرشته استفاده می‌کند؟");
+                Flow.PromptUseAngel(player);
+            }
+            else
+            {
+                player.IsAlive = false;
+                UI.UpdateStatus($"{player.Definition.PlayerName} مرد!");
+                UI.RefreshPlayerPanels(); // این خط اضافه شود
+                Flow.CheckWinCondition();
+            }
+        }
+
+        public void PlayCards(PlayerData player, List<CardDefinition> cards)
+        {
+            foreach (var card in cards)
+            {
+                player.Hand.Remove(card);
+                Data.DiscardPile.Add(card);
+            }
+
+            if (cards.Count >= 2 && cards.Count <= 3)
+            {
+                bool allSame = cards.All(c => c.CardType == cards[0].CardType);
+                if (allSame || (cards.Count(c => c.CardType != CardType.Clone) == 1 && cards.Any(c => c.CardType == CardType.Clone)))
+                {
+                    HandleMatchingCards(player, cards);
+                    return;
+                }
+            }
+
+            if (cards.Count == 1)
+            {
+                ResolveCardEffect(player, cards[0]);
+            }
+        }
+
+        private void HandleMatchingCards(PlayerData player, List<CardDefinition> cards)
+        {
+            UI.UpdateStatus($"{player.Definition.PlayerName} {cards.Count} کارت همسان بازی کرد! افکت آن‌ها باطل شد.");
+
+            if (cards.Count == 2)
+            {
+                UI.UpdateStatus("می‌توانید یک بازیکن را انتخاب کرده و بطور شانسی یک کارت او را بردارید.");
+                Flow.PromptRandomSteal(); // متد جدید در Flow برای این کار
+            }
+            else if (cards.Count == 3)
+            {
+                UI.UpdateStatus("می‌توانید یک بازیکن را انتخاب کرده و یک کارت مشخص از او بخواهید.");
+                Flow.PromptSpecificSteal(); // متد جدید در Flow برای این کار
+            }
+        }
+
+        public void ResolveCardEffect(PlayerData player, CardDefinition card)
+        {
+            Data.LastPlayedCard = card;
+            Data.LastPlayedPlayer = player;
+
+            switch (card.CardType)
+            {
+                case CardType.Attack:
+                    Data.ExtraTurns += 1;
+                    UI.UpdateStatus("حمله! بازیکن بعدی یک نوبت اضافه بازی می‌کند.");
+                    break;
+
+                case CardType.Nope:
+                    //if (Data.LastPlayedCard != null)
+                    //{
+                    //    UI.UpdateStatus($"{Data.LastPlayedPlayer.Definition.PlayerName} کارت {Data.LastPlayedCard.CardName} او باطل شد!");
+                    //    Data.LastPlayedCard = null;
+                    //    Data.LastPlayedPlayer = null;
+                    //}
+                    break;
+
+                case CardType.Eye:
+                    // فراخوانی متد در کنترلر برای نمایش جایگاه زامبی
+                    Flow.PromptEyeEffect();
+                    break;
+
+                //case CardType.Zebel:
+                //    Data.SkipDraw = true;
+                //    UI.UpdateStatus("زبل! نوبت شما بدون کارت کشیدن به پایان می‌رسد.");
+                //    break;
+
+                //case CardType.ZebelKhan:
+                //    Data.SkipDraw = true;
+                //    Data.ExtraTurns = 0;
+                //    UI.UpdateStatus("زبل خان! نوبت به بازیکن بعدی منتقل شد و نوبت‌های اضافه باطل شدند.");
+                //    break;
+                //case CardType.Tunnel:
+                //    var tunnelCard = PeekDeck(1);
+                //    if (tunnelCard.Count > 0)
+                //    {
+                //        Flow.PromptTunnelEffect(tunnelCard[0]);
+                //    }
+                //    break;
+                //14050816 1
+                case CardType.Zebel:
+                    Data.ExtraTurns = 0; // فقط یک نوبت بازی می‌شود
+                    Data.SkipDraw = true;
+                    UI.UpdateStatus("زبل! نوبت شما بدون کارت کشیدن به پایان می‌رسد.");
+                    break;
+
+                case CardType.ZebelKhan:
+                    Data.SkipDraw = true;
+                    Flow.ResetAllTurns(); // کل نوبت‌ها ریست می‌شود
+                    UI.UpdateStatus("زبل خان! همه نوبت‌ها ریست شد و نوبت به بازیکن بعدی می‌رود.");
+                    break;
+
+                case CardType.Tunnel:
+                    Data.ExtraTurns = 0; // فقط یک نوبت بازی می‌شود
+                    var tunnelCard = PeekDeck(1);
+                    if (tunnelCard.Count > 0)
+                    {
+                        Flow.PromptTunnelEffect(tunnelCard[0]);
+                    }
+                    break;
+
+                case CardType.Oracle:
+                    var top3 = PeekDeck(3);
+                    Flow.PromptOracleEffect(top3);
+                    break;
+
+                case CardType.Shuffle:
+                    ShuffleDeck();
+                    UI.UpdateStatus("دک بر زده شد!");
+                    break;
+
+                case CardType.FeedDead:
+                    Flow.PromptFeedDeadSelection();
+                    break;
+
+                case CardType.Clone:
+                    // ابتدا باید مطمئن شویم کارت قبلی (که الان در LastPlayedCard است) وجود دارد
+                    // نکته: در PlayTimerRoutine قبل از فراخوانی این متد، کارت Clone به DiscardPile اضافه شده
+                    // و Data.LastPlayedCard هنوز همان کارت قبلی است (چون در ابتدای این متد بازنویسی می‌شود)
+
+                    // پس ابتدا کارت قبلی را از یک جای مطمئن می‌خوانیم:
+                    // آخرین کارتی که SUCCESSFULLY اجرا شده و در DiscardPile هست (بدون در نظر گرفتن کارت Clone که تازه اضافه شده)
+                    CardDefinition cardToCopy = null;
+
+                    // از انتهای DiscardPile به عقب می‌گردیم تا اولین کارت غیر Clone را پیدا کنیم
+                    for (int i = Data.DiscardPile.Count - 2; i >= 0; i--)
+                    {
+                        if (Data.DiscardPile[i].CardType != CardType.Clone)
+                        {
+                            cardToCopy = Data.DiscardPile[i];
+                            break;
+                        }
+                    }
+
+                    if (cardToCopy != null)
+                    {
+                        UI.UpdateStatus($"کپی! افکت کارت {cardToCopy.CardName} تکرار می‌شود.");
+
+                        // ⚠️ قبل از اجرای کارت کپی شده، باید حالت "کارت در حال اجرا" را ذخیره کنیم
+                        // چون ResolveCardEffect در ابتدای خودش LastPlayedCard را بازنویسی می‌کند
+                        // و اگر کارت کپی شده هم Clone باشد (که نیست چون بالا فیلتر کردیم)، دوباره مشکل پیش می‌آید
+
+                        // اجرای افکت کارت کپی شده
+                        ResolveCardEffect(player, cardToCopy);
+                    }
+                    else
+                    {
+                        UI.UpdateStatus("کپی! هیچ کارت معتبری در دک سوخته برای کپی کردن وجود ندارد.");
+                    }
+                    break;
+
+                case CardType.GraveRubber:
+                    int cardsAdded = 0;
+
+                    // پیدا کردن تمام بازیکنان مرده
+                    foreach (var dead in Data.Players.Where(p => !p.IsAlive))
+                    {
+                        if (dead.Hand.Count > 0)
+                        {
+                            // انتخاب یک کارت تصادفی از دست بازیکن مرده
+                            int idx = Random.Range(0, dead.Hand.Count);
+                            CardDefinition cardToAdd = dead.Hand[idx];
+
+                            // حذف از دست مرده و اضافه کردن به دک
+                            dead.Hand.RemoveAt(idx);
+                            Data.Deck.Add(cardToAdd);
+                            cardsAdded++;
+                        }
+                    }
+
+                    // بر زدن دک
+                    ShuffleDeck();
+                    UI.UpdateDeckCount(Data.Deck.Count);
+
+                    if (cardsAdded > 0)
+                        UI.UpdateStatus($"مرده خوری! {cardsAdded} کارت از بازیکنان مرده به دک اضافه شد و دک بر زده شد.");
+                    else
+                        UI.UpdateStatus("مرده خوری! هیچ بازیکن مرده‌ای کارتی برای دادن به دک نداشت. دک بر زده شد.");
+                    break;
+
+                case CardType.Gift:
+                    Flow.PromptGiftSelection();
+                    break;
+
+                case CardType.DeadsAttack:
+                    int deadCount = Data.Players.Count(p => !p.IsAlive);
+                    if (deadCount > 0)
+                    {
+                        Data.ExtraTurns += 3 * deadCount;
+                        Data.SkipDraw = true;
+                        UI.UpdateStatus($"حمله ارواح! بازیکن بعدی باید {3 * deadCount} نوبت بازی کند.");
+                    }
+                    break;
+
+                default:
+                    UI.UpdateStatus($"کارت {card.CardName} بازی شد.");
+                    break;
+            }
+        }
+
+        public List<CardDefinition> PeekDeck(int count)
+        {
+            List<CardDefinition> cards = new List<CardDefinition>();
+            for (int i = 0; i < count && i < Data.Deck.Count; i++)
+            {
+                cards.Add(Data.Deck[i]);
+            }
+            return cards;
+        }
+    }
+}

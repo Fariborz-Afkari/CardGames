@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6adde675e0a06444b9e12d5b80b75229, type: 3}
+  m_Name: 3_ 10
+  m_EditorClassIdentifier: Assembly-CSharp::Managers.AvatarDefinition
+  AvatarId: 50
+  AvatarName: Vivian
+  Description: 
+  Image: {fileID: -6487258757721845407, guid: 8a5a6552a1b68f143957dfd44adf3a34, type: 3}
+  geneder: 1
+  SkillLevel: 3

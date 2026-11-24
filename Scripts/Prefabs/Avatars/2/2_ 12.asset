@@ -1,0 +1,20 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6adde675e0a06444b9e12d5b80b75229, type: 3}
+  m_Name: 2_ 12
+  m_EditorClassIdentifier: Assembly-CSharp::Managers.AvatarDefinition
+  AvatarId: 32
+  AvatarName: "\u0639\u0644\u06CC"
+  Description: 
+  Image: {fileID: 4703055809711861116, guid: 923a17d2050159d429228332cd805b15, type: 3}
+  geneder: 0
+  SkillLevel: 2
